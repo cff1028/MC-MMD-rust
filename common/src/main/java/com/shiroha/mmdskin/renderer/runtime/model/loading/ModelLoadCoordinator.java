@@ -107,6 +107,20 @@ public final class ModelLoadCoordinator {
         return pendingLoads.size();
     }
 
+    /** Reclaim an unused completed preview without cancelling an in-flight native allocation. */
+    public boolean discardCompleted(String fullCacheKey, Consumer<AsyncLoadResult> resultCleaner) {
+        Future<AsyncLoadResult> future = pendingLoads.get(fullCacheKey);
+        if (future == null) {
+            failedLoads.remove(fullCacheKey);
+            return true;
+        }
+        if (!future.isDone()) return false;
+        if (!pendingLoads.remove(fullCacheKey, future)) return false;
+        cleanupFutureResult(future, resultCleaner);
+        failedLoads.remove(fullCacheKey);
+        return true;
+    }
+
     public void removeMatching(Predicate<String> keyMatcher, Consumer<AsyncLoadResult> resultCleaner) {
         pendingLoads.entrySet().removeIf(entry -> {
             if (!keyMatcher.test(entry.getKey())) {

@@ -4,6 +4,7 @@ package com.shiroha.mmdskin.neoforge.config;
 import com.shiroha.mmdskin.NativeFunc;
 import com.shiroha.mmdskin.asset.catalog.ModelInfo;
 import com.shiroha.mmdskin.config.ConfigData;
+import com.shiroha.mmdskin.config.VrKeyboardMode;
 import com.shiroha.mmdskin.config.UIConstants;
 import com.shiroha.mmdskin.renderer.runtime.mode.RenderModeManager;
 import com.shiroha.mmdskin.renderer.runtime.model.MMDModelManager;
@@ -32,23 +33,35 @@ public final class ModConfigScreen {
     }
 
     public static Screen create(Screen parent) {
+        return create(parent, false);
+    }
+
+    public static Screen createVr(Screen parent) {
+        return create(parent, true);
+    }
+
+    private static Screen create(Screen parent, boolean vrOnly) {
         ConfigData data = MmdSkinConfig.getData();
         ConfigSnapshot snapshot = ConfigSnapshot.capture(data);
 
         ConfigBuilder builder = ConfigBuilder.create()
                 .setParentScreen(parent)
-                .setTitle(Component.translatable("gui.mmdskin.mod_settings.title"));
+                .setTitle(Component.translatable(vrOnly ? "gui.mmdskin.mod_settings.category.vr" : "gui.mmdskin.mod_settings.title"));
         ConfigEntryBuilder entryBuilder = builder.entryBuilder();
 
-        buildRenderCategory(builder, entryBuilder, data);
-        buildPerformanceCategory(builder, entryBuilder, data);
-        buildToonCategory(builder, entryBuilder, data);
-        buildPhysicsCategory(builder, entryBuilder, data);
-        buildDebugCategory(builder, entryBuilder, data);
+        if (!vrOnly) {
+            buildRenderCategory(builder, entryBuilder, data);
+            buildPerformanceCategory(builder, entryBuilder, data);
+            buildToonCategory(builder, entryBuilder, data);
+            buildPhysicsCategory(builder, entryBuilder, data);
+            buildDebugCategory(builder, entryBuilder, data);
+        }
         buildVrCategory(builder, entryBuilder, data);
-        buildMobReplacementCategory(builder, entryBuilder, data);
+        if (!vrOnly) buildMobReplacementCategory(builder, entryBuilder, data);
 
-        builder.setSavingRunnable(() -> saveConfig(data, snapshot));
+        // The focused VR page must not clean unrelated model selections or resync physics/render state.
+        if (vrOnly) builder.setSavingRunnable(MmdSkinConfig::save);
+        else builder.setSavingRunnable(() -> saveConfig(data, snapshot));
         return builder.build();
     }
 
@@ -415,6 +428,47 @@ public final class ModConfigScreen {
 
     private static void buildVrCategory(ConfigBuilder builder, ConfigEntryBuilder entryBuilder, ConfigData data) {
         ConfigCategory category = builder.getOrCreateCategory(Component.translatable("gui.mmdskin.mod_settings.category.vr"));
+        int initialArmIkPercent = Math.round(data.vrArmIKStrength * 100.0F);
+        category.addEntry(new ControllerDebugEntry());
+        category.addEntry(entryBuilder.startBooleanToggle(Component.translatable("gui.mmdskin.mod_settings.vr_model_above_ui"), data.vrModelAboveUi)
+                .setDefaultValue(false).setTooltip(Component.translatable("gui.mmdskin.mod_settings.vr_model_above_ui.tooltip"))
+                .setSaveConsumer(value -> data.vrModelAboveUi = value).build());
+
+        category.addEntry(entryBuilder
+                .startBooleanToggle(Component.translatable("gui.mmdskin.mod_settings.vr_keyboard"), data.vrKeyboardEnabled)
+                .setDefaultValue(false)
+                .setTooltip(Component.translatable("gui.mmdskin.mod_settings.vr_keyboard.tooltip"))
+                .setSaveConsumer(value -> data.vrKeyboardEnabled = value).build());
+        category.addEntry(entryBuilder
+                .startEnumSelector(Component.translatable("gui.mmdskin.mod_settings.vr_keyboard_mode"),
+                        VrKeyboardMode.class, data.vrKeyboardMode)
+                .setDefaultValue(VrKeyboardMode.AUTO)
+                .setEnumNameProvider(value -> Component.translatable("gui.mmdskin.keyboard.mode." + value.name().toLowerCase(Locale.ROOT)))
+                .setTooltip(Component.translatable("gui.mmdskin.mod_settings.vr_keyboard_mode.tooltip"))
+                .setSaveConsumer(value -> data.vrKeyboardMode = value).build());
+        category.addEntry(entryBuilder
+                .startBooleanToggle(Component.translatable("gui.mmdskin.mod_settings.vr_keyboard_ime"), data.vrKeyboardImeEnabled)
+                .setDefaultValue(true)
+                .setTooltip(Component.translatable("gui.mmdskin.mod_settings.vr_keyboard_ime.tooltip"))
+                .setSaveConsumer(value -> data.vrKeyboardImeEnabled = value).build());
+        var dragSmoothing = entryBuilder.startBooleanToggle(
+                        Component.translatable("gui.mmdskin.mod_settings.vr_keyboard_drag_smoothing"), data.vrKeyboardDragSmoothing)
+                .setDefaultValue(false)
+                .setTooltip(Component.translatable("gui.mmdskin.mod_settings.vr_keyboard_drag_smoothing.tooltip"))
+                .setSaveConsumer(value -> data.vrKeyboardDragSmoothing = value).build();
+        category.addEntry(dragSmoothing);
+        category.addEntry(entryBuilder.startIntSlider(
+                        Component.translatable("gui.mmdskin.mod_settings.vr_keyboard_drag_position"), data.vrKeyboardDragPositionMs, 0, 1000)
+                .setDefaultValue(120).setTextGetter(value -> Component.literal(value + " ms"))
+                .setTooltip(Component.translatable("gui.mmdskin.mod_settings.vr_keyboard_drag_time.tooltip"))
+                .setRequirement(dragSmoothing::getValue)
+                .setSaveConsumer(value -> data.vrKeyboardDragPositionMs = value).build());
+        category.addEntry(entryBuilder.startIntSlider(
+                        Component.translatable("gui.mmdskin.mod_settings.vr_keyboard_drag_rotation"), data.vrKeyboardDragRotationMs, 0, 1000)
+                .setDefaultValue(160).setTextGetter(value -> Component.literal(value + " ms"))
+                .setTooltip(Component.translatable("gui.mmdskin.mod_settings.vr_keyboard_drag_time.tooltip"))
+                .setRequirement(dragSmoothing::getValue)
+                .setSaveConsumer(value -> data.vrKeyboardDragRotationMs = value).build());
 
         category.addEntry(entryBuilder
                 .startBooleanToggle(Component.translatable("gui.mmdskin.mod_settings.vr_enabled"), data.vrEnabled)
@@ -424,12 +478,40 @@ public final class ModConfigScreen {
                 .build());
 
         category.addEntry(entryBuilder
-                .startIntSlider(Component.translatable("gui.mmdskin.mod_settings.vr_arm_ik_strength"), Math.round(data.vrArmIKStrength * 100.0F), 0, 100)
+                .startIntSlider(Component.translatable("gui.mmdskin.mod_settings.vr_arm_ik_strength"), initialArmIkPercent, 0, 100)
                 .setDefaultValue(100)
                 .setTooltip(Component.translatable("gui.mmdskin.mod_settings.vr_arm_ik_strength.tooltip"))
                 .setTextGetter(value -> Component.literal(value + "%"))
-                .setSaveConsumer(value -> data.vrArmIKStrength = value.intValue() / 100.0F)
+                .setSaveConsumer(value -> {
+                    // Keep user-edited precision when only another option was changed.
+                    if (value.intValue() != initialArmIkPercent) data.vrArmIKStrength = value.intValue() / 100.0F;
+                })
                 .build());
+    }
+
+    /** Navigation only: no save callback and no implicit application of pending settings. */
+    private static final class ControllerDebugEntry extends AbstractConfigListEntry<Boolean> {
+        private final net.minecraft.client.gui.components.Button button;
+        ControllerDebugEntry() {
+            super(Component.translatable("gui.mmdskin.controller_debug.open"), false);
+            button = net.minecraft.client.gui.components.Button.builder(getFieldName(), b -> {
+                var mc = net.minecraft.client.Minecraft.getInstance();
+                mc.setScreen(new com.shiroha.mmdskin.ui.selector.VrControllerDebugScreen(mc.screen));
+            }).bounds(0, 0, 200, 20).build();
+        }
+        @Override public Boolean getValue() { return false; }
+        @Override public java.util.Optional<Boolean> getDefaultValue() { return java.util.Optional.empty(); }
+        @Override public boolean isEdited() { return false; }
+        @Override public void save() {}
+        @Override public int getItemHeight() { return 26; }
+        @Override public java.util.List<? extends net.minecraft.client.gui.components.events.GuiEventListener> children() { return List.of(button); }
+        @Override public java.util.List<? extends net.minecraft.client.gui.narration.NarratableEntry> narratables() { return List.of(button); }
+        @Override public void render(net.minecraft.client.gui.GuiGraphics graphics, int index, int y, int x, int width, int height,
+                                     int mouseX, int mouseY, boolean hovered, float tick) {
+            super.render(graphics, index, y, x, width, height, mouseX, mouseY, hovered, tick);
+            button.setX(x); button.setY(y); button.setWidth(width);
+            button.render(graphics, mouseX, mouseY, tick);
+        }
     }
 
     private static void buildMobReplacementCategory(ConfigBuilder builder, ConfigEntryBuilder entryBuilder, ConfigData data) {

@@ -29,5 +29,11 @@ public abstract class MinecraftMixin {
             ci.cancel();
         }
     }
+    @Inject(method = "close", at = @At("HEAD"))
+    private void mmdskin$disposeSpatialMenu(CallbackInfo ci) {
+        com.shiroha.mmdskin.ui.spatial.SpatialMenuHost.shutdown();
+        com.shiroha.mmdskin.ui.spatial.render.SpatialMenuNativeFont.close();
+        com.shiroha.mmdskin.compat.vr.keyboard.VrKeyboardUi.releaseRenderer();
+    }
 }
 

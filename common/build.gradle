@@ -1,9 +1,18 @@
 // 负责公共模块的通用依赖与测试配置。
+apply from: rootProject.file('gradle/spatial-ui.gradle')
  architectury {
     common("fabric", "neoforge")
 }
 
+configurations { spatialUiNativeResources }
+
 dependencies {
+    compileOnly("org.lwjgl:lwjgl-nanovg:${spatialUiLwjglVersion}") { transitive = false }
+    testImplementation("org.lwjgl:lwjgl-nanovg:${spatialUiLwjglVersion}") { transitive = false }
+    testRuntimeOnly("org.lwjgl:lwjgl-nanovg:${spatialUiLwjglVersion}:${spatialUiHostNativeClassifier}") { transitive = false }
+    spatialUiNativeClassifiers.each { classifier ->
+        spatialUiNativeResources("org.lwjgl:lwjgl-nanovg:${spatialUiLwjglVersion}:${classifier}") { transitive = false }
+    }
     // Architectury API（作为 mod 依赖以启用 Loom 重映射）
     modImplementation("dev.architectury:architectury:${project.architectury_version}")
     compileOnly("net.fabricmc:fabric-loader:${project.loader_version}")
@@ -22,6 +31,20 @@ sourceSets {
         // 无特殊排除设置
     }
 }
+
+// Put natives in the owning mod's namespace. NeoForge cannot reliably see a separate,
+// resource-only runtime JAR through the NanoVG Java module's classloader.
+def extractSpatialUiNatives = tasks.register('extractSpatialUiNatives', Sync) {
+    from({ configurations.spatialUiNativeResources.collect { zipTree(it) } }) {
+        include 'windows/**/*.dll', 'linux/**/*.so', 'macos/**/*.dylib'
+        into 'assets/mmdskin/lumen/natives'
+    }
+    into layout.buildDirectory.dir('generated/spatial-ui-natives')
+    includeEmptyDirs = false
+}
+// Task-backed source directories also carry the dependency to sourcesJar/IDE resource tasks.
+sourceSets.main.resources.srcDir(extractSpatialUiNatives)
+tasks.named('processResources') { dependsOn extractSpatialUiNatives }
 
 test {
     useJUnitPlatform()

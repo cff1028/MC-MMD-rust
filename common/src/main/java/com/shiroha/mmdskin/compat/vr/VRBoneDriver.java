@@ -3,12 +3,18 @@ package com.shiroha.mmdskin.compat.vr;
 
 import com.shiroha.mmdskin.bridge.runtime.NativeModelBridgePorts;
 import com.shiroha.mmdskin.bridge.runtime.NativeModelPort;
-import com.shiroha.mmdskin.player.runtime.FirstPersonManager;
+import com.shiroha.mmdskin.compat.vr.hand.VrFingerDriver;
+import com.shiroha.mmdskin.config.ModelConfigData;
+import com.shiroha.mmdskin.config.ModelConfigManager;
+import com.shiroha.mmdskin.ui.network.PlayerModelSyncManager;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+
+import java.util.Map;
+import java.util.WeakHashMap;
 
 /**
  * 文件职责：把 VR 追踪数据转换到模型局部空间并驱动原生 IK。
@@ -19,12 +25,17 @@ public final class VRBoneDriver {
 
     private static final Logger LOGGER = LogManager.getLogger();
     private static volatile NativeModelPort modelPort = NativeModelBridgePorts.modelPort();
+    private static final Map<Player, LocomotionBinding> locomotion = new WeakHashMap<>();
+    private static final Map<Player, FingerBinding> fingers = new WeakHashMap<>();
+    private static final float[] NO_FINGER_TRACKING = new float[40];
 
     private VRBoneDriver() {
     }
 
     public static void configureRuntimeCollaborators(NativeModelPort modelPort) {
         VRBoneDriver.modelPort = modelPort != null ? modelPort : NativeModelBridgePorts.modelPort();
+        locomotion.clear();
+        fingers.clear();
     }
 
     public static boolean isVRPlayer(Player player) {
@@ -36,19 +47,25 @@ public final class VRBoneDriver {
     }
 
     public static boolean driveModel(long modelHandle, Player player, float tickDelta) {
-        if (modelHandle == 0 || player == null) {
+        return driveModel(modelHandle, player, tickDelta, 0.09f);
+    }
+
+    public static boolean driveModel(long modelHandle, Player player, float tickDelta, float worldUnitsPerModelUnit) {
+        if (modelHandle == 0 || player == null || !Float.isFinite(worldUnitsPerModelUnit)
+                || worldUnitsPerModelUnit <= 1.0e-6f) {
             return false;
         }
 
         try {
             float[] worldData = VRDataProvider.getRenderTrackingData(player);
             if (!hasUsableTrackingData(worldData)) {
+                stopLocomotion(modelHandle, player, tickDelta);
                 return false;
             }
 
-            Vec3 renderOrigin = VRDataProvider.getRenderOrigin(player, tickDelta)
-                    .add(FirstPersonManager.getLocalVrModelRootOffset(player));
+            Vec3 renderOrigin = VRDataProvider.getRenderOrigin(player, tickDelta);
             if (!isFiniteVec3(renderOrigin)) {
+                stopLocomotion(modelHandle, player, tickDelta);
                 LOGGER.debug("Skipped VR bone drive because render origin was invalid");
                 return false;
             }
@@ -58,24 +75,81 @@ public final class VRBoneDriver {
             float pz = (float) renderOrigin.z;
             float yawRad = VRDataProvider.getBodyYawRad(player, tickDelta);
             if (!Float.isFinite(yawRad)) {
+                stopLocomotion(modelHandle, player, tickDelta);
                 LOGGER.debug("Skipped VR bone drive because body yaw was invalid");
                 return false;
             }
 
             float[] localTracking = new float[TRACKING_PACKET_LENGTH];
             transformWorldTrackingToPlayerLocal(worldData, px, py, pz, Mth.cos(yawRad), Mth.sin(yawRad), localTracking);
+            String modelName = PlayerModelSyncManager.getPlayerModel(player.getUUID(), player.getName().getString(), true);
+            ModelConfigData config = ModelConfigManager.getLiveConfig(modelName);
+            // Native IK maps controller reach to the avatar; this does not resize limb bones.
+            modelPort.setVrArmLengthScale(modelHandle, config.vrArmLengthScale);
+            // Adjust only the avatar anchor; the physical camera and interaction rays stay untouched.
+            localTracking[0] += config.vrEyeOffsetX;
+            localTracking[1] += config.vrEyeOffsetY;
+            localTracking[2] += config.vrEyeOffsetZ;
             if (!hasUsableTrackingData(localTracking)) {
+                stopLocomotion(modelHandle, player, tickDelta);
                 LOGGER.debug("Skipped VR bone drive because transformed tracking packet became invalid");
                 return false;
             }
 
-            modelPort.applyVrTrackingInput(modelHandle, localTracking);
+            modelPort.applyVrTrackingInput(modelHandle, localTracking, 1.0f / worldUnitsPerModelUnit);
+            updateFingers(modelHandle, player, tickDelta, config);
+            updateLocomotion(modelHandle, player, tickDelta, worldData, yawRad, worldUnitsPerModelUnit);
             return true;
         } catch (Exception e) {
             LOGGER.debug("VR bone driving failed", e);
             return false;
         }
     }
+
+    private static void updateLocomotion(long modelHandle, Player player, float tickDelta,
+                                         float[] tracking, float yaw, float worldUnitsPerModelUnit) {
+        LocomotionBinding binding = locomotion.get(player);
+        if (binding == null || binding.modelHandle != modelHandle) {
+            binding = new LocomotionBinding(modelHandle, new VrLocomotionState());
+            locomotion.put(player, binding);
+        }
+        Vec3 head = VivecraftReflectionBridge.getWorldRenderHeadPosition(player);
+        if (!isFiniteVec3(head)) head = new Vec3(tracking[0], tracking[1], tracking[2]);
+        boolean grounded = player.onGround() && !player.getAbilities().flying && !player.isSwimming()
+                && !player.isFallFlying() && !player.isPassenger() && !player.isSleeping()
+                && !net.minecraft.client.Minecraft.getInstance().isPaused();
+        long frame = locomotionFrameId(player, tickDelta);
+        var motion = binding.state.sample(frame, System.nanoTime(), head.x, head.z, yaw,
+                VRDataProvider.getBodyTurnRateRadians(player), worldUnitsPerModelUnit, grounded, player.isCrouching());
+        modelPort.setVrLocomotion(modelHandle, frame, motion.velocityX(), motion.velocityZ(),
+                motion.turnRate(), motion.allowed(), motion.crouching());
+    }
+
+    private static long locomotionFrameId(Player player, float tickDelta) {
+        long frame = VivecraftReflectionBridge.getRenderFrameId();
+        return frame != Long.MIN_VALUE ? frame : ((long) player.tickCount << 32) | (Float.floatToIntBits(tickDelta) & 0xffffffffL);
+    }
+
+    private static void stopLocomotion(long modelHandle, Player player, float tickDelta) {
+        locomotion.remove(player);
+        fingers.remove(player);
+        modelPort.setVrFingerTracking(modelHandle, NO_FINGER_TRACKING, 0);
+        modelPort.setVrLocomotion(modelHandle, locomotionFrameId(player, tickDelta), 0, 0, 0, false, false);
+    }
+
+    private static void updateFingers(long modelHandle, Player player, float tickDelta, ModelConfigData config) {
+        if (player != net.minecraft.client.Minecraft.getInstance().player) return;
+        FingerBinding binding = fingers.get(player);
+        if (binding == null || binding.modelHandle != modelHandle) {
+            binding = new FingerBinding(modelHandle, new VrFingerDriver());
+            fingers.put(player, binding);
+        }
+        binding.driver.update(modelPort, modelHandle, locomotionFrameId(player, tickDelta), config);
+    }
+
+    private record FingerBinding(long modelHandle, VrFingerDriver driver) {}
+
+    private record LocomotionBinding(long modelHandle, VrLocomotionState state) {}
 
     static void transformWorldTrackingToPlayerLocal(float[] worldData,
                                                     float px,
@@ -187,6 +261,10 @@ public final class VRBoneDriver {
         }
         try {
             modelPort.setVrEnabled(modelHandle, enabled);
+            if (!enabled) {
+                locomotion.values().removeIf(binding -> binding.modelHandle == modelHandle);
+                fingers.values().removeIf(binding -> binding.modelHandle == modelHandle);
+            }
         } catch (Exception e) {
             LOGGER.debug("Failed to set VR mode", e);
         }

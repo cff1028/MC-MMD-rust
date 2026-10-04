@@ -1,7 +1,7 @@
 //! JNI 原生函数实现
 
 use jni::objects::{JByteBuffer, JClass, JString};
-use jni::sys::{jboolean, jbyte, jfloat, jint, jlong, jstring};
+use jni::sys::{jboolean, jbyte, jfloat, jfloatArray, jint, jlong, jstring};
 use jni::JNIEnv;
 use std::ptr;
 use std::sync::Arc;
@@ -3319,6 +3319,28 @@ pub extern "system" fn Java_com_shiroha_mmdskin_NativeFunc_ApplyVRTrackingInput(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_shiroha_mmdskin_NativeFunc_ApplyVRTrackingInputScaled(
+    env: JNIEnv,
+    _class: JClass,
+    model: jlong,
+    tracking_data: jni::objects::JFloatArray,
+    model_units_per_world_unit: jfloat,
+) {
+    if !model_units_per_world_unit.is_finite() || model_units_per_world_unit <= 0.0 {
+        return;
+    }
+    let mut buf = [0.0f32; 21];
+    if env.get_float_array_region(&tracking_data, 0, &mut buf).is_err() {
+        return;
+    }
+    let models = MODELS.read().unwrap();
+    if let Some(model_arc) = models.get(&model) {
+        let mut m = model_arc.lock().unwrap();
+        m.apply_java_vr_tracking_input_packet_with_scale(&buf, model_units_per_world_unit);
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_shiroha_mmdskin_NativeFunc_SetVREnabled(
     _env: JNIEnv,
     _class: JClass,
@@ -3329,6 +3351,29 @@ pub extern "system" fn Java_com_shiroha_mmdskin_NativeFunc_SetVREnabled(
     if let Some(model_arc) = models.get(&model) {
         let mut m = model_arc.lock().unwrap();
         m.set_vr_enabled(enabled != 0);
+    }
+}
+
+/// 设置 VR IK 参数
+#[no_mangle]
+pub extern "system" fn Java_com_shiroha_mmdskin_NativeFunc_CopyModelPose(
+    _env: JNIEnv,
+    _class: JClass,
+    source: jlong,
+    destination: jlong,
+) -> jboolean {
+    let models = MODELS.read().unwrap_or_else(|e| e.into_inner());
+    let (Some(src), Some(dst)) = (models.get(&source), models.get(&destination)) else { return 0; };
+    if source == destination { return 1; }
+    // Globally ordered locks make opposite-direction concurrent copies safe.
+    if source < destination {
+        let src = src.lock().unwrap_or_else(|e| e.into_inner());
+        let mut dst = dst.lock().unwrap_or_else(|e| e.into_inner());
+        dst.copy_pose_from(&src) as jboolean
+    } else {
+        let mut dst = dst.lock().unwrap_or_else(|e| e.into_inner());
+        let src = src.lock().unwrap_or_else(|e| e.into_inner());
+        dst.copy_pose_from(&src) as jboolean
     }
 }
 
@@ -3345,6 +3390,103 @@ pub extern "system" fn Java_com_shiroha_mmdskin_NativeFunc_SetVRIKParams(
         let mut m = model_arc.lock().unwrap();
         m.set_vr_ik_strength(arm_ik_strength);
     }
+}
+
+/// 用户有效臂长 / 当前模型静止臂长（0.25~4.0，默认 1.0）。仅重定向手目标，不缩放骨骼。
+#[no_mangle]
+pub extern "system" fn Java_com_shiroha_mmdskin_NativeFunc_SetVRArmLengthScale(
+    _env: JNIEnv,
+    _class: JClass,
+    model: jlong,
+    scale: jfloat,
+) {
+    let models = MODELS.read().unwrap();
+    if let Some(model_arc) = models.get(&model) {
+        model_arc.lock().unwrap().set_vr_arm_length_scale(scale);
+    }
+}
+
+/// Once-per-render-frame locomotion sample in the same player-local model basis as tracking.
+#[no_mangle]
+pub extern "system" fn Java_com_shiroha_mmdskin_NativeFunc_SetVRFingerTracking(
+    env: JNIEnv,
+    _class: JClass,
+    model: jlong,
+    joint_angles: jni::objects::JFloatArray,
+    valid_hands: jint,
+) {
+    let mut angles = [0.0; 40];
+    let valid = valid_hands & 3;
+    // A zero mask is also the explicit reset API, including a null array.
+    if valid != 0 && (env.get_array_length(&joint_angles).unwrap_or(0) < 40
+        || env.get_float_array_region(&joint_angles, 0, &mut angles).is_err()) {
+        return;
+    }
+    let models = MODELS.read().unwrap_or_else(|e| e.into_inner());
+    if let Some(model) = models.get(&model) {
+        model.lock().unwrap_or_else(|e| e.into_inner())
+            .set_vr_finger_tracking(&angles, valid as u8);
+    }
+}
+
+/// Runtime-only thumb flexion-plane correction, radians in [-PI, PI].
+#[no_mangle]
+pub extern "system" fn Java_com_shiroha_mmdskin_NativeFunc_SetVRThumbCalibration(
+    _env: JNIEnv,
+    _class: JClass,
+    model: jlong,
+    left_twist_radians: jfloat,
+    right_twist_radians: jfloat,
+) {
+    let models = MODELS.read().unwrap_or_else(|e| e.into_inner());
+    if let Some(model) = models.get(&model) {
+        model.lock().unwrap_or_else(|e| e.into_inner())
+            .set_vr_thumb_calibration(left_twist_radians, right_twist_radians);
+    }
+}
+
+/// Once-per-render-frame locomotion sample in the same player-local model basis as tracking.
+#[no_mangle]
+pub extern "system" fn Java_com_shiroha_mmdskin_NativeFunc_SetVRLocomotion(
+    _env: JNIEnv,
+    _class: JClass,
+    model: jlong,
+    sample_id: jlong,
+    velocity_x: jfloat,
+    velocity_z: jfloat,
+    turn_rate: jfloat,
+    allowed: jboolean,
+    crouching: jboolean,
+) {
+    let models = MODELS.read().unwrap();
+    if let Some(model_arc) = models.get(&model) {
+        model_arc.lock().unwrap().set_vr_locomotion(
+            sample_id, velocity_x, velocity_z, turn_rate, allowed != 0, crouching != 0,
+        );
+    }
+}
+
+/// 静止模型单位：[眼高, 左臂长, 右臂长, 左肩xyz, 右肩xyz]。
+#[no_mangle]
+pub extern "system" fn Java_com_shiroha_mmdskin_NativeFunc_GetVRCalibrationDimensions(
+    env: JNIEnv,
+    _class: JClass,
+    model: jlong,
+) -> jfloatArray {
+    let values = {
+        let models = MODELS.read().unwrap();
+        match models.get(&model) {
+            Some(model_arc) => model_arc.lock().unwrap().vr_calibration_dimensions(),
+            None => [0.0; 9],
+        }
+    };
+    let Ok(array) = env.new_float_array(values.len() as jint) else {
+        return ptr::null_mut();
+    };
+    if env.set_float_array_region(&array, 0, &values).is_err() {
+        return ptr::null_mut();
+    }
+    array.into_raw()
 }
 
 /// 设置 VR 手部渲染模式（0=全身, 1=仅左手, 2=仅右手）

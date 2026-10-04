@@ -92,9 +92,15 @@ public final class DefaultVrRuntimePort implements VrRuntimePort {
 
     @Override
     public void updateModelVr(long modelHandle, Player player, float tickDelta, float armIkStrength) {
+        updateModelVr(modelHandle, player, tickDelta, armIkStrength, 0.09f);
+    }
+
+    @Override
+    public void updateModelVr(long modelHandle, Player player, float tickDelta, float armIkStrength,
+                              float worldUnitsPerModelUnit) {
         try {
             VRBoneDriver.setVRIKParams(modelHandle, armIkStrength);
-            VRBoneDriver.driveModel(modelHandle, player, tickDelta);
+            VRBoneDriver.driveModel(modelHandle, player, tickDelta, worldUnitsPerModelUnit);
         } catch (Exception e) {
             LOGGER.debug("Failed to update VR model tracking", e);
         }

@@ -28,7 +28,7 @@ public final class VRDataProvider {
 
     public static float getBodyYawRad(Player player, float tickDelta) {
         float vrYaw = trackingFacade.getBodyYawRadians(player);
-        if (!Float.isNaN(vrYaw)) {
+        if (Float.isFinite(vrYaw)) {
             return vrYaw;
         }
         return Mth.rotLerp(tickDelta, player.yBodyRotO, player.yBodyRot) * ((float) Math.PI / 180F);
@@ -36,6 +36,11 @@ public final class VRDataProvider {
 
     public static float getBodyYawDegrees(Player player, float tickDelta) {
         return getBodyYawRad(player, tickDelta) * (180F / (float) Math.PI);
+    }
+
+    /** Avatar torso follow, excluding Vivecraft room rotation; useful for turn-in-place gait. */
+    public static float getBodyTurnRateRadians(Player player) {
+        return VivecraftReflectionBridge.getBodyTurnRateRadians(player);
     }
 
     public static Vec3 getRenderOrigin(Player player, float tickDelta) {

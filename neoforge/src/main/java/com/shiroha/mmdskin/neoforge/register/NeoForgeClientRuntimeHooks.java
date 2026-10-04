@@ -40,6 +40,7 @@ final class NeoForgeClientRuntimeHooks {
     @SubscribeEvent
     public void onClientTick(ClientTickEvent.Post event) {
         Minecraft minecraft = Minecraft.getInstance();
+        com.shiroha.mmdskin.compat.vr.VrLinkedActions.tick();
         if (minecraft.player == null) {
             return;
         }

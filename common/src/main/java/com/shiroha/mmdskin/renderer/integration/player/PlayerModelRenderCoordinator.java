@@ -2,6 +2,8 @@ package com.shiroha.mmdskin.renderer.integration.player;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.shiroha.mmdskin.NativeFunc;
+import com.shiroha.mmdskin.compat.vr.mirror.VrMirrorScenePass;
 import com.shiroha.mmdskin.config.ConfigManager;
 import com.shiroha.mmdskin.config.ModelConfigManager;
 import com.shiroha.mmdskin.player.animation.AnimationStateManager;
@@ -41,11 +43,31 @@ final class PlayerModelRenderCoordinator {
         modelData.loadModelProperties(false);
 
         float[] size = ModelPropertyHelper.getModelSize(modelData.properties);
+        if (InventoryEntityRenderScope.isRendering(player)) {
+            // The delegate selected a separate native instance. Never feed GUI entity
+            // rotations into world VR tracking, eye caches or first-person masks.
+            MMDModelManager.Model worldPose = selection.isLocalPlayer()
+                    && FirstPersonManager.vrRuntime().isLocalPlayerInVr()
+                    ? MMDModelManager.getLoadedModel(selection.selectedModel(), selection.playerCacheKey())
+                    : null;
+            matrixStack.pushPose();
+            try {
+                InventoryRenderHelper.renderInInventory(player, model, player.yBodyRot,
+                        tickDelta, matrixStack, packedLight, size, worldPose == null ? null : worldPose.model);
+                ItemRenderHelper.renderItems(player, modelData, matrixStack, vertexConsumers, packedLight);
+                return PlayerMixinDelegate.RenderAction.CANCEL;
+            } finally {
+                matrixStack.popPose();
+            }
+        }
+        if (VrMirrorScenePass.isRendering()) {
+            return renderMirrorPose(player, tickDelta, matrixStack, vertexConsumers, packedLight, modelData, size);
+        }
+        float combinedScale = size[0] * ModelConfigManager.getLiveConfig(selection.selectedModel()).modelScale;
         boolean isVr = selection.isLocalPlayer() && FirstPersonManager.vrRuntime().isLocalPlayerInVr();
-        syncVrState(modelData, player, tickDelta, isVr);
+        syncVrState(modelData, player, tickDelta, isVr, 0.09f * combinedScale);
 
         ModelRuntimeBridge runtimeBridge = ModelRuntimeBridgeHolder.get();
-        float combinedScale = size[0] * ModelConfigManager.getLiveConfig(selection.selectedModel()).modelScale;
         runtimeBridge.preRenderFirstPerson(model.getModelHandle(), combinedScale, selection.isLocalPlayer());
         boolean isFirstPerson = !isVr && selection.isLocalPlayer() && FirstPersonManager.isActive();
 
@@ -59,21 +81,18 @@ final class PlayerModelRenderCoordinator {
 
         matrixStack.pushPose();
         try {
-            if (InventoryRenderHelper.isInventoryScreen()) {
-                InventoryRenderHelper.renderInInventory(player, model, entityYaw, tickDelta, matrixStack, packedLight, size);
-            } else {
-                matrixStack.scale(size[0], size[0], size[0]);
-                RenderSystem.setShader(CoreShaders.RENDERTYPE_ENTITY_TRANSLUCENT);
-                RenderContext context = isFirstPerson ? RenderContext.FIRST_PERSON : RenderContext.WORLD;
-                model.render(player, params.bodyYaw, params.bodyPitch, params.translation, tickDelta, matrixStack, packedLight, context);
-            }
+            matrixStack.scale(size[0], size[0], size[0]);
+            RenderSystem.setShader(CoreShaders.RENDERTYPE_ENTITY_TRANSLUCENT);
+            boolean aboveUi = selection.isLocalPlayer() && com.shiroha.mmdskin.compat.vr.VrFirstPersonUiLayer.shouldDefer();
+            RenderContext context = aboveUi ? RenderContext.VR_POSE_ONLY : isFirstPerson ? RenderContext.FIRST_PERSON : RenderContext.WORLD;
+            model.render(player, params.bodyYaw, params.bodyPitch, params.translation, tickDelta, matrixStack, packedLight, context);
 
             if (needsLocalRenderSync) {
                 runtimeBridge.postRenderFirstPerson(model.getModelHandle(), player, tickDelta);
                 needsLocalRenderSync = false;
             }
 
-            ItemRenderHelper.renderItems(player, modelData, matrixStack, vertexConsumers, packedLight);
+            if (!aboveUi) ItemRenderHelper.renderItems(player, modelData, matrixStack, vertexConsumers, packedLight);
             return PlayerMixinDelegate.RenderAction.CANCEL;
         } finally {
             try {
@@ -86,10 +105,41 @@ final class PlayerModelRenderCoordinator {
         }
     }
 
+    private static PlayerMixinDelegate.RenderAction renderMirrorPose(AbstractClientPlayer player,
+                                                                      float tickDelta,
+                                                                      PoseStack matrixStack,
+                                                                      MultiBufferSource vertexConsumers,
+                                                                      int packedLight,
+                                                                      MMDModelManager.Model modelData,
+                                                                      float[] size) {
+        IMMDModel model = modelData.model;
+        RenderParams params = PlayerRenderHelper.calculateRenderParams(player, modelData, tickDelta);
+        NativeFunc nativeApi = NativeFunc.GetInst();
+        long handle = model.getModelHandle();
+        boolean firstPersonMask = nativeApi.IsFirstPersonMode(handle);
+        matrixStack.pushPose();
+        try {
+            nativeApi.SetFirstPersonMode(handle, false);
+            matrixStack.scale(size[0], size[0], size[0]);
+            RenderSystem.setShader(CoreShaders.RENDERTYPE_ENTITY_TRANSLUCENT);
+            model.render(player, params.bodyYaw, params.bodyPitch, params.translation,
+                    tickDelta, matrixStack, packedLight, RenderContext.MIRROR);
+            ItemRenderHelper.renderItems(player, modelData, matrixStack, vertexConsumers, packedLight);
+            return PlayerMixinDelegate.RenderAction.CANCEL;
+        } finally {
+            try {
+                nativeApi.SetFirstPersonMode(handle, firstPersonMask);
+            } finally {
+                matrixStack.popPose();
+            }
+        }
+    }
+
     private static void syncVrState(MMDModelManager.Model modelData,
                                     AbstractClientPlayer player,
                                     float tickDelta,
-                                    boolean isVr) {
+                                    boolean isVr,
+                                    float worldUnitsPerModelUnit) {
         IMMDModel model = modelData.model;
         if (!(model instanceof AbstractMMDModel abstractModel)) {
             return;
@@ -109,7 +159,8 @@ final class PlayerModelRenderCoordinator {
                     model.getModelHandle(),
                     player,
                     tickDelta,
-                    ConfigManager.getVRArmIKStrength()
+                    ConfigManager.getVRArmIKStrength() * ModelConfigManager.getLiveConfig(modelData.getModelName()).vrArmIkStrength,
+                    worldUnitsPerModelUnit
             );
             return;
         }

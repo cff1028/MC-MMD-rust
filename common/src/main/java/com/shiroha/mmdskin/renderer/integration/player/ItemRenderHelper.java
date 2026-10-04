@@ -57,6 +57,13 @@ public class ItemRenderHelper {
 
         applyConfiguredRotation(matrixStack, player, model, hand);
 
+        ModelConfigData itemConfig = ModelConfigManager.getLiveConfig(model.getModelName());
+        // Offsets use the item's local units and remain independent of item scaling.
+        matrixStack.translate(itemConfig.heldItemOffsetX * 10.0f,
+                itemConfig.heldItemOffsetY * 10.0f, itemConfig.heldItemOffsetZ * 10.0f);
+        matrixStack.mulPose(new Quaternionf().rotationXYZ(itemConfig.heldItemRotationX * DEG_TO_RAD,
+                itemConfig.heldItemRotationY * DEG_TO_RAD, itemConfig.heldItemRotationZ * DEG_TO_RAD));
+
         float itemScale = resolveItemScale(heldItemScale);
         matrixStack.scale(10.0f * itemScale, 10.0f * itemScale, 10.0f * itemScale);
 

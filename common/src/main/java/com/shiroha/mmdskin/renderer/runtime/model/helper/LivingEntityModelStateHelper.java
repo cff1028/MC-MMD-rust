@@ -26,6 +26,12 @@ public final class LivingEntityModelStateHelper {
                                       String modelName,
                                       boolean stagePlaying,
                                       boolean vrActive) {
+        if (context != null && context.isInventoryScene()) {
+            HeadAngleHelper.updateHeadAngle(nativeFunc, modelHandle, entity, entityYaw, tickDelta, context);
+            nativeFunc.SetEyeTrackingEnabled(modelHandle, false);
+            nativeFunc.SetModelPositionAndYaw(modelHandle, 0, 0, 0, 0);
+            return;
+        }
         if (stagePlaying) {
             nativeFunc.SetHeadAngle(modelHandle, 0.0f, 0.0f, 0.0f, context.isWorldScene());
         } else if (!vrActive) {
@@ -40,9 +46,6 @@ public final class LivingEntityModelStateHelper {
                         Mth.lerp(tickDelta, entity.yo, entity.getY()),
                         Mth.lerp(tickDelta, entity.zo, entity.getZ())
                 );
-        if (entity instanceof Player player) {
-            renderOrigin = renderOrigin.add(FirstPersonManager.getLocalVrModelRootOffset(player));
-        }
 
         float posX = (float) (renderOrigin.x * MODEL_SCALE);
         float posY = (float) (renderOrigin.y * MODEL_SCALE);

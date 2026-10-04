@@ -9,7 +9,9 @@ import com.shiroha.mmdskin.renderer.runtime.bridge.ModelRuntimeBridgeHolder;
 import com.shiroha.mmdskin.renderer.compat.IrisCompat;
 import com.shiroha.mmdskin.renderer.runtime.cache.ModelCache;
 import com.shiroha.mmdskin.renderer.runtime.model.loading.ModelLoadCoordinator;
+import com.shiroha.mmdskin.renderer.runtime.model.loading.MaterialVisibilityState;
 import com.shiroha.mmdskin.renderer.runtime.model.loading.ModelPropertiesLoader;
+import com.shiroha.mmdskin.renderer.runtime.model.loading.PreviewLoadRequests;
 import com.shiroha.mmdskin.renderer.runtime.mode.RenderModeManager;
 import com.shiroha.mmdskin.renderer.runtime.model.factory.ModelFactoryRegistry;
 import com.shiroha.mmdskin.renderer.runtime.texture.MMDTextureManager;
@@ -33,10 +35,18 @@ public class MMDModelManager {
     private static ModelCache<Model> modelCache;
 
     private static final ModelLoadCoordinator loadCoordinator = new ModelLoadCoordinator();
+    private static final PreviewLoadRequests previewLoads = new PreviewLoadRequests();
 
     private static final AtomicInteger totalModelsLoaded = new AtomicInteger(0);
 
     public static int getTotalModelsLoaded() { return totalModelsLoaded.get(); }
+
+    /** Read an existing instance without starting/finalizing a background load. */
+    public static Model getLoadedModel(String modelName, String cacheKey) {
+        if (modelCache == null) return null;
+        ModelCache.CacheEntry<Model> entry = modelCache.get(modelName + "_" + cacheKey);
+        return entry == null ? null : entry.value;
+    }
 
     public static void Init() {
         ModelFactoryRegistry.registerAll();
@@ -47,9 +57,14 @@ public class MMDModelManager {
 
     public static Model GetModel(String modelName, String cacheKey) {
         String fullCacheKey = modelName + "_" + cacheKey;
+        boolean inventoryPreview = cacheKey.startsWith("inventory_preview_");
 
         ModelCache.CacheEntry<Model> entry = modelCache.get(fullCacheKey);
         if (entry != null) {
+            if (inventoryPreview) {
+                previewLoads.resolved(fullCacheKey);
+                applyMaterialVisibility(entry.value);
+            }
             return entry.value;
         }
 
@@ -57,8 +72,11 @@ public class MMDModelManager {
             return null;
         }
 
-        return loadCoordinator.resolveOrQueue(fullCacheKey, modelName,
+        if (inventoryPreview) previewLoads.requested(fullCacheKey, System.nanoTime());
+        Model resolved = loadCoordinator.resolveOrQueue(fullCacheKey, modelName,
                 result -> finalizeModelOnRenderThread(fullCacheKey, result));
+        if (inventoryPreview && resolved != null) previewLoads.resolved(fullCacheKey);
+        return resolved;
     }
 
     private static Model finalizeModelOnRenderThread(String fullCacheKey, ModelLoadCoordinator.AsyncLoadResult result) {
@@ -99,6 +117,7 @@ public class MMDModelManager {
 
     public static void forceReloadModel(String modelName) {
         String prefix = modelName + "_";
+        previewLoads.removeMatching(key -> key.startsWith(prefix));
         loadCoordinator.removeMatching(key -> key.startsWith(prefix), MMDModelManager::cleanupLoadedResult);
         MMDTextureManager.clearPreloaded();
         modelCache.removeMatching(key -> key.startsWith(prefix), MMDModelManager::disposeModel);
@@ -106,6 +125,7 @@ public class MMDModelManager {
 
     public static void forceReloadPlayerModels(String playerCacheKey) {
         String suffix = "_" + playerCacheKey;
+        previewLoads.removeMatching(key -> key.endsWith(suffix));
         loadCoordinator.removeMatching(key -> key.endsWith(suffix), MMDModelManager::cleanupLoadedResult);
         modelCache.removeMatching(key -> key.endsWith(suffix), MMDModelManager::disposeModel);
     }
@@ -117,6 +137,7 @@ public class MMDModelManager {
     }
 
     private static void cancelAllPendingLoads() {
+        previewLoads.clear();
         loadCoordinator.cancelAll(MMDModelManager::cleanupLoadedResult);
         MMDTextureManager.clearPreloaded();
     }
@@ -128,6 +149,8 @@ public class MMDModelManager {
     }
 
     public static void tick() {
+        previewLoads.expire(System.nanoTime(), key ->
+                loadCoordinator.discardCompleted(key, MMDModelManager::cleanupLoadedResult));
         modelCache.tick(MMDModelManager::disposeModel);
         MMDTextureManager.tick();
     }
@@ -142,25 +165,21 @@ public class MMDModelManager {
         model.resetPhysics();
         model.changeAnim(MMDAnimManager.GetAnimModel(model, "idle"), 0);
 
-        applyMaterialVisibility(model.getModelHandle(), modelName);
+        applyMaterialVisibility(m);
 
         return m;
     }
 
-    private static void applyMaterialVisibility(long modelHandle, String modelName) {
+    private static void applyMaterialVisibility(Model model) {
         try {
-            ModelConfigData config = ModelConfigManager.getLiveConfig(modelName);
-            if (config.hiddenMaterials.isEmpty()) return;
-
-            int materialCount = ModelRuntimeBridgeHolder.get().getMaterialCount(modelHandle);
-
-            for (int index : config.hiddenMaterials) {
-                if (index >= 0 && index < materialCount) {
-                    ModelRuntimeBridgeHolder.get().setMaterialVisible(modelHandle, index, false);
-                }
-            }
+            ModelConfigData config = ModelConfigManager.getLiveConfig(model.modelName);
+            long handle = model.model.getModelHandle();
+            var bridge = ModelRuntimeBridgeHolder.get();
+            model.materialVisibility.synchronize(config.hiddenMaterials,
+                    () -> bridge.getMaterialCount(handle),
+                    (index, visible) -> bridge.setMaterialVisible(handle, index, visible));
         } catch (Exception e) {
-            logger.warn("恢复材质可见性失败: {}", modelName, e);
+            logger.warn("恢复材质可见性失败: {}", model.modelName, e);
         }
     }
 
@@ -218,6 +237,7 @@ public class MMDModelManager {
         public EntityAnimState entityData;
         String entityName;
         String modelName;
+        private final MaterialVisibilityState materialVisibility = new MaterialVisibilityState();
 
         public String getModelName() {
             return modelName;

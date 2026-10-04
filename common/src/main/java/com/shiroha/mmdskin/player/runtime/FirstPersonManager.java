@@ -2,6 +2,7 @@ package com.shiroha.mmdskin.player.runtime;
 
 import com.shiroha.mmdskin.NativeFunc;
 import com.shiroha.mmdskin.compat.vr.DefaultVrRuntimePort;
+import com.shiroha.mmdskin.compat.vr.VRArmHider;
 import com.shiroha.mmdskin.config.ConfigManager;
 import com.shiroha.mmdskin.player.port.VrRuntimePort;
 import net.minecraft.client.CameraType;
@@ -24,11 +25,10 @@ public final class FirstPersonManager {
     private static float cachedModelScale = 1.0f;
     private static boolean activeDesktopFirstPerson = false;
     private static boolean activeVrEyeCamera = false;
+    private static boolean activeNativeFirstPerson = false;
     private static long trackedModelHandle = 0;
     private static final float[] eyeBonePos = new float[3];
     private static boolean eyeBoneValid = false;
-    private static Vec3 vrModelRootOffset = Vec3.ZERO;
-    private static boolean vrModelRootOffsetValid = false;
     private static Vec3 lastCameraPos = Vec3.ZERO;
     private static volatile VrRuntimePort vrRuntimePort = new DefaultVrRuntimePort();
 
@@ -52,7 +52,7 @@ public final class FirstPersonManager {
     }
 
     public static boolean shouldRenderFirstPerson() {
-        if (isLocalVrMmdModelActive()) {
+        if (VRArmHider.isLocalVrRuntimeActive()) {
             return false;
         }
         if (!ConfigManager.isFirstPersonModelEnabled()) {
@@ -75,21 +75,23 @@ public final class FirstPersonManager {
         boolean desktopFirstPerson = shouldRenderFirstPerson();
         boolean vrModelActive = isLocalVrMmdModelActive();
         boolean vrEyeCamera = vrModelActive && isVrFirstPersonRequested() && vrRuntimePort.isLocalPlayerEyePass();
-        boolean shouldEnableNativeFirstPerson = desktopFirstPerson;
+        boolean shouldEnableNativeFirstPerson = desktopFirstPerson || vrEyeCamera;
 
         if (modelHandle != trackedModelHandle) {
-            if (trackedModelHandle != 0 && activeDesktopFirstPerson) {
+            if (trackedModelHandle != 0 && activeNativeFirstPerson) {
                 nf.SetFirstPersonMode(trackedModelHandle, false);
             }
             trackedModelHandle = modelHandle;
             activeDesktopFirstPerson = false;
+            activeNativeFirstPerson = false;
         }
 
-        if (shouldEnableNativeFirstPerson != activeDesktopFirstPerson) {
+        if (shouldEnableNativeFirstPerson != activeNativeFirstPerson) {
             nf.SetFirstPersonMode(modelHandle, shouldEnableNativeFirstPerson);
-            activeDesktopFirstPerson = shouldEnableNativeFirstPerson;
+            activeNativeFirstPerson = shouldEnableNativeFirstPerson;
         }
 
+        activeDesktopFirstPerson = desktopFirstPerson;
         activeVrEyeCamera = vrEyeCamera;
         if (desktopFirstPerson || vrModelActive) {
             cachedModelScale = modelScale;
@@ -99,7 +101,6 @@ public final class FirstPersonManager {
     public static void postRender(NativeFunc nf, long modelHandle, Player player, float tickDelta) {
         nf.GetEyeBonePosition(modelHandle, eyeBonePos);
         eyeBoneValid = eyeBonePos[0] != 0.0f || eyeBonePos[1] != 0.0f || eyeBonePos[2] != 0.0f;
-        updateVrModelRootOffset(player, tickDelta);
     }
 
     public static boolean isActive() {
@@ -119,20 +120,6 @@ public final class FirstPersonManager {
 
     public static boolean isEyeBoneValid() {
         return eyeBoneValid;
-    }
-
-    public static Vec3 getLocalVrModelRootOffset(Player player) {
-        if (player == null) {
-            return Vec3.ZERO;
-        }
-        Minecraft minecraft = Minecraft.getInstance();
-        if (minecraft == null) {
-            return Vec3.ZERO;
-        }
-        if (player == null || minecraft.player == null || !minecraft.player.getUUID().equals(player.getUUID())) {
-            return Vec3.ZERO;
-        }
-        return vrModelRootOffsetValid ? vrModelRootOffset : Vec3.ZERO;
     }
 
     public static void getEyeWorldOffset(float[] out) {
@@ -182,13 +169,14 @@ public final class FirstPersonManager {
     }
 
     public static void reset() {
+        com.shiroha.mmdskin.compat.vr.VrFirstPersonUiLayer.release();
         disableTrackedModel();
         activeDesktopFirstPerson = false;
         activeVrEyeCamera = false;
+        activeNativeFirstPerson = false;
         trackedModelHandle = 0;
         cachedModelScale = 1.0f;
         clearEyeBoneState();
-        clearVrModelRootOffset();
         lastCameraPos = Vec3.ZERO;
     }
 
@@ -246,34 +234,10 @@ public final class FirstPersonManager {
         return Mth.rotLerp(tickDelta, player.yBodyRotO, player.yBodyRot);
     }
 
-    private static void updateVrModelRootOffset(Player player, float tickDelta) {
-        if (player == null || !eyeBoneValid || !isLocalVrMmdModelActive()) {
-            return;
-        }
-
-        Vec3 headRenderPos = vrRuntimePort.getWorldRenderHeadPosition(player);
-        if (headRenderPos == null) {
-            return;
-        }
-
-        Vec3 avatarEyePos = getRotatedEyePositionFallback(player, tickDelta);
-        double correctedY = Mth.clamp(vrModelRootOffset.y + (headRenderPos.y - avatarEyePos.y), -2.5d, 2.5d);
-        vrModelRootOffset = new Vec3(0.0d, correctedY, 0.0d);
-        vrModelRootOffsetValid = true;
-    }
-
-    private static Vec3 getRotatedEyePositionFallback(Player player, float partialTick) {
-        float[] eyeOffset = new float[3];
-        getEyeWorldOffset(eyeOffset);
-        Vec3 renderOrigin = fallbackRenderOrigin(player, partialTick);
-        float yawRad = (float) Math.toRadians(fallbackBodyYawDegrees(player, partialTick));
-        return resolveWorldEyePosition(renderOrigin, yawRad, eyeOffset[0], eyeOffset[1], eyeOffset[2]);
-    }
-
     private static Vec3 getVrRotatedEyePosition(Player player, float partialTick) {
         float[] eyeOffset = new float[3];
         getEyeWorldOffset(eyeOffset);
-        Vec3 renderOrigin = fallbackRenderOrigin(player, partialTick).add(getLocalVrModelRootOffset(player));
+        Vec3 renderOrigin = fallbackRenderOrigin(player, partialTick);
         float yawRad = (float) Math.toRadians(fallbackBodyYawDegrees(player, partialTick));
         return resolveWorldEyePosition(renderOrigin, yawRad, eyeOffset[0], eyeOffset[1], eyeOffset[2]);
     }
@@ -317,7 +281,7 @@ public final class FirstPersonManager {
     }
 
     private static void disableTrackedModel() {
-        if (!activeDesktopFirstPerson || trackedModelHandle == 0) {
+        if (!activeNativeFirstPerson || trackedModelHandle == 0) {
             return;
         }
         try {
@@ -334,8 +298,4 @@ public final class FirstPersonManager {
         eyeBoneValid = false;
     }
 
-    private static void clearVrModelRootOffset() {
-        vrModelRootOffset = Vec3.ZERO;
-        vrModelRootOffsetValid = false;
-    }
 }

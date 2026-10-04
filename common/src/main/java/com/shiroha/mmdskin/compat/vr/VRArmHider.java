@@ -13,7 +13,12 @@ public final class VRArmHider {
     }
 
     public static boolean isLocalPlayerInVR() {
-        if (!ConfigManager.isVREnabled() || !VRDetector.isAvailable()) {
+        return ConfigManager.isVREnabled() && isLocalVrRuntimeActive();
+    }
+
+    /** Vivecraft owns camera and picking whenever VR is running, even with MMD tracking disabled. */
+    public static boolean isLocalVrRuntimeActive() {
+        if (!VRDetector.isAvailable()) {
             return false;
         }
 

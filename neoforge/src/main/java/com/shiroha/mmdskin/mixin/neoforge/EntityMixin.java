@@ -2,6 +2,7 @@
 package com.shiroha.mmdskin.mixin.neoforge;
 
 import com.shiroha.mmdskin.config.ConfigManager;
+import com.shiroha.mmdskin.compat.vr.VRArmHider;
 import com.shiroha.mmdskin.player.runtime.FirstPersonManager;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.Mth;
@@ -16,6 +17,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class EntityMixin {
     @Inject(method = "getEyePosition(F)Lnet/minecraft/world/phys/Vec3;", at = @At("HEAD"), cancellable = true)
     private void onGetEyePosition(float partialTick, CallbackInfoReturnable<Vec3> cir) {
+        // Vivecraft temporarily moves the entity to the aiming controller during pick().
+        if (VRArmHider.isLocalVrRuntimeActive()) {
+            return;
+        }
         boolean vrEyeCameraActive = FirstPersonManager.isVrEyeCameraActive();
         boolean eyeCameraActive = FirstPersonManager.isEyeCameraActive();
         boolean eyeAnchorReady = vrEyeCameraActive || FirstPersonManager.isEyeBoneValid();
@@ -72,6 +77,9 @@ public abstract class EntityMixin {
 
     @Inject(method = "getViewVector(F)Lnet/minecraft/world/phys/Vec3;", at = @At("HEAD"), cancellable = true)
     private void onGetViewVector(float partialTick, CallbackInfoReturnable<Vec3> cir) {
+        if (VRArmHider.isLocalVrRuntimeActive()) {
+            return;
+        }
         boolean vrEyeCameraActive = FirstPersonManager.isVrEyeCameraActive();
         boolean eyeCameraActive = FirstPersonManager.isEyeCameraActive();
         boolean eyeAnchorReady = vrEyeCameraActive || FirstPersonManager.isEyeBoneValid();

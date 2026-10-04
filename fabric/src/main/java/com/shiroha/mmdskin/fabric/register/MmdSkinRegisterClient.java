@@ -68,6 +68,7 @@ public final class MmdSkinRegisterClient {
         }
 
         ConfigWheelScreen.setModSettingsScreenFactory(() -> ModConfigScreen.create(null));
+        com.shiroha.mmdskin.compat.vr.VrLinkedActions.setVrSettingsScreenFactory(() -> ModConfigScreen.createVr(null));
         NETWORK_BINDINGS.register(minecraft);
         RUNTIME_HOOKS.register(minecraft);
         registerEntityRenderers(minecraft);

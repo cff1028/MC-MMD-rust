@@ -17,6 +17,11 @@ public class DefaultModelSettingsGateway implements ModelSettingsGateway {
     }
 
     @Override
+    public void previewConfig(String modelName, ModelConfigData config) {
+        ModelConfigManager.previewConfig(modelName, config);
+    }
+
+    @Override
     public String getQuickSlotModel(int slot) {
         return ModelSelectorConfig.getInstance().getQuickSlotModel(slot);
     }

@@ -24,6 +24,8 @@ class ConfigDataTest {
         data.maxPhysicsModelsPerFrame = 0;
         data.physicsLodMaxDistance = -5.0f;
         data.vrArmIKStrength = 9.0f;
+        data.vrKeyboardDragPositionMs = -1;
+        data.vrKeyboardDragRotationMs = 5000;
 
         invokeNormalize(data);
 
@@ -36,6 +38,8 @@ class ConfigDataTest {
         assertEquals(1, data.maxPhysicsModelsPerFrame);
         assertEquals(0.0f, data.physicsLodMaxDistance);
         assertEquals(1.0f, data.vrArmIKStrength);
+        assertEquals(0, data.vrKeyboardDragPositionMs);
+        assertEquals(1000, data.vrKeyboardDragRotationMs);
     }
 
     @Test
@@ -82,6 +86,10 @@ class ConfigDataTest {
         source.mobModelReplacements.put("minecraft:苦力怕", "模型-测试");
         source.vrArmIKStrength = 3.0f;
         source.performanceLogIntervalSeconds = 0;
+        assertEquals(false, source.vrKeyboardDragSmoothing);
+        source.vrKeyboardDragSmoothing = true;
+        source.vrKeyboardDragPositionMs = 230;
+        source.vrKeyboardDragRotationMs = 470;
 
         source.save(tempDir);
         ConfigData loaded = ConfigData.load(tempDir);
@@ -89,6 +97,9 @@ class ConfigDataTest {
         assertEquals("模型-测试", loaded.mobModelReplacements.get("minecraft:苦力怕"));
         assertEquals(1.0f, loaded.vrArmIKStrength);
         assertEquals(1, loaded.performanceLogIntervalSeconds);
+        assertEquals(true, loaded.vrKeyboardDragSmoothing);
+        assertEquals(230, loaded.vrKeyboardDragPositionMs);
+        assertEquals(470, loaded.vrKeyboardDragRotationMs);
     }
 
     private static void invokeNormalize(ConfigData data) throws Exception {

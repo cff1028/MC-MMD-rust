@@ -5,6 +5,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.joml.Vector3fc;
 
 /**
  * 文件职责：提供 Vivecraft 运行时的反射兼容桥接。
@@ -35,6 +36,18 @@ public final class VivecraftReflectionBridge {
     public static float getBodyYawRadians(Player player) {
         Support activeSupport = getSupport();
         return activeSupport != null ? activeSupport.getBodyYawRadians(player) : Float.NaN;
+    }
+
+    /** Shared by both eyes and mirror passes; unavailable runtimes return Long.MIN_VALUE. */
+    public static long getRenderFrameId() {
+        Support activeSupport = getSupport();
+        return activeSupport != null ? activeSupport.getRenderFrameId() : Long.MIN_VALUE;
+    }
+
+    public static float getBodyTurnRateRadians(Player player) {
+        Support activeSupport = getSupport();
+        if (activeSupport == null || !Float.isFinite(activeSupport.getBodyYawRadians(player))) return 0;
+        return activeSupport.bodyYawState.turnRateRadians();
     }
 
     public static boolean isLocalPlayerEyePass() {
@@ -92,11 +105,17 @@ public final class VivecraftReflectionBridge {
         private final java.lang.reflect.Method clientDataHolderGetInstanceMethod;
         private final java.lang.reflect.Field clientDataHolderVrPlayerField;
         private final java.lang.reflect.Method gameplayVrPlayerGetVrDataWorldMethod;
-        private final java.lang.reflect.Method vrDataGetBodyYawRadMethod;
+        private final java.lang.reflect.Field clientFrameIndexField;
+        private final java.lang.reflect.Field vrPlayerWorldRenderField;
+        private final java.lang.reflect.Field vrDataRoomRotationField;
+        private final java.lang.reflect.Field vrDataHeadField;
+        private final java.lang.reflect.Method vrHeadDirectionMethod;
+        private final VrBodyYawState bodyYawState = new VrBodyYawState();
+        private Player bodyYawPlayer;
         private final VivecraftRenderStateController renderStateController;
         private final VivecraftTrackingDataReader trackingDataReader;
 
-        private Support(VivecraftBindings bindings) {
+        private Support(VivecraftBindings bindings) throws ReflectiveOperationException {
             this.vrApiInstanceMethod = bindings.vrApiInstanceMethod();
             this.vrApiIsVrPlayerMethod = bindings.vrApiIsVrPlayerMethod();
             this.vrApiGetVrPoseMethod = bindings.vrApiGetVrPoseMethod();
@@ -115,7 +134,12 @@ public final class VivecraftReflectionBridge {
             this.clientDataHolderGetInstanceMethod = bindings.clientDataHolderGetInstanceMethod();
             this.clientDataHolderVrPlayerField = bindings.clientDataHolderVrPlayerField();
             this.gameplayVrPlayerGetVrDataWorldMethod = bindings.gameplayVrPlayerGetVrDataWorldMethod();
-            this.vrDataGetBodyYawRadMethod = bindings.vrDataGetBodyYawRadMethod();
+            this.clientFrameIndexField = clientDataHolderGetInstanceMethod.getReturnType().getField("frameIndex");
+            this.vrPlayerWorldRenderField = clientDataHolderVrPlayerField.getType().getField("vrdata_world_render");
+            Class<?> vrDataClass = bindings.vrDataGetBodyYawRadMethod().getDeclaringClass();
+            this.vrDataRoomRotationField = vrDataClass.getField("rotation_radians");
+            this.vrDataHeadField = vrDataClass.getField("hmd");
+            this.vrHeadDirectionMethod = vrDataHeadField.getType().getMethod("getDirection");
             this.renderStateController = new VivecraftRenderStateController(
                     bindings.vrSettingsInstanceField(),
                     bindings.showPlayerHandsField(),
@@ -196,6 +220,8 @@ public final class VivecraftReflectionBridge {
             }
             try {
                 if (!isLocalVrActive()) {
+                    bodyYawState.reset();
+                    bodyYawPlayer = null;
                     return Float.NaN;
                 }
 
@@ -209,16 +235,39 @@ public final class VivecraftReflectionBridge {
                     return Float.NaN;
                 }
 
-                Object vrDataWorld = gameplayVrPlayerGetVrDataWorldMethod.invoke(vrPlayer);
+                // Render data is shared by every eye/pass. Do not use the camera/RVE's temporary transform.
+                Object vrDataWorld = vrPlayerWorldRenderField.get(vrPlayer);
+                if (vrDataWorld == null) vrDataWorld = gameplayVrPlayerGetVrDataWorldMethod.invoke(vrPlayer);
                 if (vrDataWorld == null) {
                     return Float.NaN;
                 }
 
-                float yaw = ((Number) vrDataGetBodyYawRadMethod.invoke(vrDataWorld)).floatValue();
-                return Float.isFinite(yaw) ? yaw : Float.NaN;
+                if (bodyYawPlayer != player) {
+                    bodyYawState.reset();
+                    bodyYawPlayer = player;
+                }
+                Object head = vrDataHeadField.get(vrDataWorld);
+                Object direction = head == null ? null : vrHeadDirectionMethod.invoke(head);
+                float headYaw = direction instanceof Vector3fc forward
+                        ? VrBodyYawState.headYaw(forward.x(), forward.z()) : Float.NaN;
+                Vec3 velocity = player.getDeltaMovement();
+                double speed = player.isPassenger() ? 0 : Math.hypot(velocity.x, velocity.z);
+                return bodyYawState.update(clientFrameIndexField.getLong(clientDataHolder), System.nanoTime(),
+                        headYaw, vrDataRoomRotationField.getFloat(vrDataWorld), speed);
             } catch (Throwable t) {
                 LOGGER.debug("Failed to query Vivecraft body yaw", t);
                 return Float.NaN;
+            }
+        }
+
+        long getRenderFrameId() {
+            try {
+                Object client = vrClientApiInstanceMethod.invoke(null);
+                if (client == null || !(boolean) vrClientIsVrActiveMethod.invoke(client)) return Long.MIN_VALUE;
+                Object holder = clientDataHolderGetInstanceMethod.invoke(null);
+                return holder == null ? Long.MIN_VALUE : clientFrameIndexField.getLong(holder);
+            } catch (ReflectiveOperationException | RuntimeException failure) {
+                return Long.MIN_VALUE;
             }
         }
 

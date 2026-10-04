@@ -1,0 +1,20 @@
+// Match Minecraft 1.21.4's LWJGL ABI. Package NanoVG only; Minecraft owns GLFW/OpenGL/core.
+ext.spatialUiLwjglVersion = '3.3.3'
+ext.spatialUiNativeClassifiers = [
+    'natives-windows', 'natives-windows-arm64', 'natives-windows-x86',
+    'natives-linux', 'natives-linux-arm64', 'natives-linux-arm32',
+    'natives-macos', 'natives-macos-arm64'
+]
+def spatialOs = System.getProperty('os.name').toLowerCase(Locale.ROOT)
+def spatialArch = System.getProperty('os.arch').toLowerCase(Locale.ROOT)
+def spatialArm64 = spatialArch == 'aarch64' || spatialArch == 'arm64'
+def spatialArm32 = spatialArch.startsWith('arm') && !spatialArm64
+def spatialX86 = spatialArch == 'x86' || spatialArch.matches('i[3-6]86')
+def spatialFamily = spatialOs.contains('mac') || spatialOs.contains('darwin') ? 'macos' :
+    spatialOs.contains('win') ? 'windows' : 'linux'
+ext.spatialUiHostNativeClassifier = 'natives-' + spatialFamily +
+    (spatialArm64 ? '-arm64' : spatialArm32 ? '-arm32' : spatialX86 && spatialFamily == 'windows' ? '-x86' : '')
+
+if (!spatialUiNativeClassifiers.contains(spatialUiHostNativeClassifier)) {
+    throw new GradleException("No NanoVG ${spatialUiLwjglVersion} native for ${spatialOs}/${spatialArch}")
+}

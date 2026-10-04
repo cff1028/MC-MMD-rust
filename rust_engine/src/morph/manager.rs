@@ -119,6 +119,15 @@ pub struct MorphManager {
 }
 
 impl MorphManager {
+    /// Copy evaluated expression output, leaving static morph definitions intact.
+    pub(crate) fn copy_pose_from(&mut self, source: &Self) {
+        for (dst, src) in self.morphs.iter_mut().zip(&source.morphs) {
+            dst.weight = src.weight;
+        }
+        self.material_morph_results.clone_from(&source.material_morph_results);
+        self.uv_morph_deltas.clone_from(&source.uv_morph_deltas);
+    }
+
     pub fn new() -> Self {
         Self {
             morphs: Vec::new(),

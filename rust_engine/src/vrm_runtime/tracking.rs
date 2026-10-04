@@ -197,11 +197,11 @@ pub(crate) fn pmx_controller_hand_tracking_calibration() -> HandTrackingCalibrat
 
 pub(crate) fn vivecraft_body_tracking_calibration() -> BodyTrackingCalibration {
     BodyTrackingCalibration {
-        // Minecraft already owns the avatar's world-space root position and body yaw.
-        // Vivecraft tracking should only drive local upper-body pose, not move the whole model.
+        // Minecraft owns the world origin and body yaw. Align the local eye anchor
+        // with the HMD once in the native solver; Java must not add a second correction.
         body_yaw_follow_gain: 0.0,
-        horizontal_translation_follow_gain: 0.0,
-        vertical_translation_follow_gain: 0.7,
+        horizontal_translation_follow_gain: 1.0,
+        vertical_translation_follow_gain: 1.0,
         body_translation_clamp_model: 0.0,
         shoulder_follow_gain: 0.0,
         ..BodyTrackingCalibration::default()

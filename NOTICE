@@ -91,3 +91,17 @@ https://github.com/ReaNAiveD/mdanceio
 
 PMX/VMD/VPD 格式由樋口優 (Higuchi Yu) 创作
 MikuMikuDance: https://sites.google.com/view/vpvp/
+
+================================================================================
+Lumen 空间菜单使用的图形与字体渲染库
+================================================================================
+LWJGL 3.3.3 NanoVG Java bindings: Copyright (c) 2012-present Lightweight Java Game Library
+BSD-3-Clause: https://github.com/LWJGL/lwjgl3/tree/3.3.3
+NanoVG: Copyright (c) 2013 Mikko Mononen, zlib license
+FontStash: Copyright (c) 2009-2013 Mikko Mononen, zlib license
+stb_truetype: Copyright (c) 2017 Sean Barrett, MIT license
+FontStash UTF-8 decoder: Copyright (c) 2008-2010 Bjoern Hoehrmann, MIT license
+
+对应完整许可随发布 JAR 打包于 META-INF/licenses/mmdskin/。
+仅新增 NanoVG 绑定和各平台原生库；LWJGL 核心、GLFW、OpenGL 由 Minecraft 提供。
+系统字体（例如 Microsoft YaHei）从用户操作系统读取，未包含在本项目或发布 JAR 中。

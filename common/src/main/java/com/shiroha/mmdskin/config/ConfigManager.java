@@ -195,6 +195,14 @@ public final class ConfigManager {
         return provider != null ? provider.getVRArmIKStrength() : 1.0f;
     }
 
+    public static boolean isVRModelAboveUi() { return provider != null && provider.isVRModelAboveUi(); }
+    public static boolean isVRKeyboardEnabled() { return provider != null && provider.isVRKeyboardEnabled(); }
+    public static VrKeyboardMode getVRKeyboardMode() { return provider != null ? provider.getVRKeyboardMode() : VrKeyboardMode.AUTO; }
+    public static boolean isVRKeyboardImeEnabled() { return provider == null || provider.isVRKeyboardImeEnabled(); }
+    public static boolean isVRKeyboardDragSmoothing() { return provider != null && provider.isVRKeyboardDragSmoothing(); }
+    public static int getVRKeyboardDragPositionMs() { return provider != null ? provider.getVRKeyboardDragPositionMs() : 120; }
+    public static int getVRKeyboardDragRotationMs() { return provider != null ? provider.getVRKeyboardDragRotationMs() : 160; }
+
     public static String getMobModelReplacement(String entityTypeId) {
         return provider != null ? provider.getMobModelReplacement(entityTypeId) : "";
     }

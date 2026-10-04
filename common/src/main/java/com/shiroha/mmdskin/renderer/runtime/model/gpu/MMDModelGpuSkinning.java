@@ -2,6 +2,7 @@ package com.shiroha.mmdskin.renderer.runtime.model.gpu;
 
 import com.shiroha.mmdskin.NativeFunc;
 import com.shiroha.mmdskin.renderer.runtime.texture.MMDTextureManager;
+import com.shiroha.mmdskin.renderer.runtime.texture.MMDTextureUpload;
 import com.shiroha.mmdskin.renderer.pipeline.shader.ShaderConstants;
 import com.shiroha.mmdskin.renderer.pipeline.shader.SkinningComputeShader;
 import com.shiroha.mmdskin.renderer.pipeline.shader.ToonShaderCpu;
@@ -328,23 +329,8 @@ public class MMDModelGpuSkinning extends AbstractMMDModel {
                 MMDTextureManager.addRef(lightMapPath);
                 texKeys.add(lightMapPath);
             } else {
-                lightMapMaterial.tex = GL46C.glGenTextures();
+                lightMapMaterial.tex = MMDTextureUpload.createWhiteLightMap();
                 lightMapMaterial.ownsTexture = true;
-                GL46C.glBindTexture(GL46C.GL_TEXTURE_2D, lightMapMaterial.tex);
-                ByteBuffer texBuffer = ByteBuffer.allocateDirect(16 * 16 * 4);
-                texBuffer.order(ByteOrder.LITTLE_ENDIAN);
-                for (int i = 0; i < 16 * 16; i++) {
-                    texBuffer.put((byte) 255);
-                    texBuffer.put((byte) 255);
-                    texBuffer.put((byte) 255);
-                    texBuffer.put((byte) 255);
-                }
-                texBuffer.flip();
-                GL46C.glTexImage2D(GL46C.GL_TEXTURE_2D, 0, GL46C.GL_RGBA, 16, 16, 0, GL46C.GL_RGBA, GL46C.GL_UNSIGNED_BYTE, texBuffer);
-                GL46C.glTexParameteri(GL46C.GL_TEXTURE_2D, GL46C.GL_TEXTURE_MAX_LEVEL, 0);
-                GL46C.glTexParameteri(GL46C.GL_TEXTURE_2D, GL46C.GL_TEXTURE_MIN_FILTER, GL46C.GL_LINEAR);
-                GL46C.glTexParameteri(GL46C.GL_TEXTURE_2D, GL46C.GL_TEXTURE_MAG_FILTER, GL46C.GL_LINEAR);
-                GL46C.glBindTexture(GL46C.GL_TEXTURE_2D, 0);
                 lightMapMaterial.hasAlpha = true;
             }
 

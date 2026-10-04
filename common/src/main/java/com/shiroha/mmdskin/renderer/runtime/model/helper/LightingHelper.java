@@ -24,6 +24,9 @@ public final class LightingHelper {
     }
 
     public static LightData sampleLight(Entity entity, Minecraft mc) {
+        if (com.shiroha.mmdskin.renderer.integration.player.InventoryEntityRenderScope.isRendering(entity)) {
+            return DEFAULT_LIGHT;
+        }
         if (mc.level == null) return DEFAULT_LIGHT;
         mc.level.updateSkyBrightness();
         int eyeHeight = (int) (entity.getEyeY() - entity.getBlockY());

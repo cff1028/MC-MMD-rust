@@ -51,7 +51,12 @@ public final class NativeModelBridgePorts {
 
         @Override
         public void applyVrTrackingInput(long modelHandle, float[] trackingData) {
-            nativeFunc().SetVRTrackingData(modelHandle, trackingData);
+            nativeFunc().ApplyVRTrackingInput(modelHandle, trackingData);
+        }
+
+        @Override
+        public void applyVrTrackingInput(long modelHandle, float[] trackingData, float modelUnitsPerWorldUnit) {
+            nativeFunc().ApplyVRTrackingInputScaled(modelHandle, trackingData, modelUnitsPerWorldUnit);
         }
 
         @Override
@@ -62,6 +67,33 @@ public final class NativeModelBridgePorts {
         @Override
         public void setVrIkParams(long modelHandle, float armIkStrength) {
             nativeFunc().SetVRIKParams(modelHandle, armIkStrength);
+        }
+
+        @Override
+        public void setVrArmLengthScale(long modelHandle, float scale) {
+            nativeFunc().SetVRArmLengthScale(modelHandle, scale);
+        }
+
+        @Override
+        public void setVrLocomotion(long modelHandle, long sampleId, float velocityXModel,
+                float velocityZModel, float turnRateRadians, boolean allowed, boolean crouching) {
+            nativeFunc().SetVRLocomotion(modelHandle, sampleId, velocityXModel, velocityZModel,
+                    turnRateRadians, allowed, crouching);
+        }
+
+        @Override
+        public float[] getVrCalibrationDimensions(long modelHandle) {
+            return nativeFunc().GetVRCalibrationDimensions(modelHandle);
+        }
+
+        @Override
+        public void setVrFingerTracking(long modelHandle, float[] jointAngles, int validHands) {
+            nativeFunc().SetVRFingerTracking(modelHandle, jointAngles, validHands);
+        }
+
+        @Override
+        public void setVrThumbCalibration(long modelHandle, float leftTwistRadians, float rightTwistRadians) {
+            nativeFunc().SetVRThumbCalibration(modelHandle, leftTwistRadians, rightTwistRadians);
         }
 
         @Override

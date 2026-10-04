@@ -27,6 +27,12 @@ public class ModelSettingsApplicationService {
         runtimeGateway.applyConfigIfSelected(modelName, config);
     }
 
+    public void preview(String modelName, ModelConfigData config) {
+        ModelConfigData safeCopy = config.normalizedCopy();
+        gateway.previewConfig(modelName, safeCopy);
+        runtimeGateway.applyConfigIfSelected(modelName, safeCopy);
+    }
+
     public ModelConfigData resetToDefaults() {
         return new ModelConfigData();
     }

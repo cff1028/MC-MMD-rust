@@ -6,6 +6,23 @@
 
 ## 直接依赖
 
+### Lumen 空间菜单
+
+| 库名 | 版本/来源 | 许可证 | 用途 |
+|------|-----------|--------|------|
+| LWJGL NanoVG bindings | 3.3.3，与 Minecraft 1.21.4 的 LWJGL ABI 一致 | BSD-3-Clause | NanoVG Java API 与各平台原生库 |
+| NanoVG | LWJGL 3.3.3 内置源码 | zlib | 抗锯齿矢量界面和文本 |
+| FontStash | LWJGL 3.3.3 内置源码 | zlib | NanoVG 字体图集 |
+| stb_truetype | LWJGL 3.3.3 内置源码 | MIT | 字形栅格化 |
+| Bjoern Hoehrmann UTF-8 decoder | FontStash 内置源码 | MIT | 字符串解码 |
+
+完整许可位于 `common/src/main/resources/META-INF/licenses/mmdskin/`，随 Fabric/NeoForge 发布 JAR 一同分发。
+来源为 [LWJGL 3.3.3](https://github.com/LWJGL/lwjgl3/tree/3.3.3) 及 [UTF-8 decoder](https://bjoern.hoehrmann.de/utf-8/decoder/dfa/)。
+NanoVG 原生资源覆盖 Windows、Linux、macOS 的上游支持架构；开发与测试运行自动选择当前操作系统/CPU 的原生库。
+该覆盖仅描述 NanoVG 资源，不扩展 MMD Rust 引擎或 Vivecraft 自身支持的平台。
+系统字体从操作系统读取，不打包或分发 Microsoft YaHei 等系统字体。
+
+
 ### Rust 引擎 (rust_engine)
 
 | 库名 | 版本 | 许可证 | 仓库地址 |
@@ -45,4 +62,3 @@
 | Saba | MIT | https://github.com/benikabocha/saba | 物理系统设计 |
 | nphysics | Apache-2.0 | https://github.com/dimforge/nphysics | 骨骼层次结构 |
 | mdanceio | MIT | https://github.com/ReaNAiveD/mdanceio | 动画系统 |
-

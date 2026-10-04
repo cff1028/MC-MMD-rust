@@ -2,6 +2,7 @@
 
 pub mod animation;
 pub mod jni_bridge;
+pub mod keyboard;
 pub mod model;
 pub mod morph;
 pub mod physics;

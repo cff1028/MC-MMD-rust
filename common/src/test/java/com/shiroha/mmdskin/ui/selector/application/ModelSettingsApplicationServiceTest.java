@@ -52,10 +52,33 @@ class ModelSettingsApplicationServiceTest {
         assertEquals("alice", runtimeGateway.lastModelName);
     }
 
+    @Test
+    void shouldPreviewAndRestoreThroughRuntimeWithoutSaving() {
+        FakeSettingsGateway gateway = new FakeSettingsGateway();
+        FakeRuntimeGateway runtimeGateway = new FakeRuntimeGateway();
+        ModelSettingsApplicationService service = new ModelSettingsApplicationService(gateway, runtimeGateway);
+        ModelConfigData original = service.loadEditableConfig("alice");
+        ModelConfigData edited = original.copy();
+        edited.vrEyeOffsetZ = 0.3f;
+        edited.heldItemRotationY = 40.0f;
+
+        service.preview("alice", edited);
+        assertEquals(0.3f, gateway.previewed.vrEyeOffsetZ);
+        assertEquals(40.0f, gateway.previewed.heldItemRotationY);
+        assertEquals("alice", runtimeGateway.lastModelName);
+        assertNull(gateway.saved);
+
+        service.preview("alice", original);
+        assertEquals(0.0f, gateway.previewed.vrEyeOffsetZ);
+        assertEquals(0.0f, gateway.previewed.heldItemRotationY);
+        assertNull(gateway.saved);
+    }
+
     private static final class FakeSettingsGateway implements ModelSettingsGateway {
         private final String[] quickSlots = new String[4];
         private final ModelConfigData stored = new ModelConfigData();
         private ModelConfigData saved;
+        private ModelConfigData previewed;
 
         @Override
         public ModelConfigData loadConfig(String modelName) {
@@ -65,6 +88,11 @@ class ModelSettingsApplicationServiceTest {
         @Override
         public void saveConfig(String modelName, ModelConfigData config) {
             saved = config.copy();
+        }
+
+        @Override
+        public void previewConfig(String modelName, ModelConfigData config) {
+            previewed = config.copy();
         }
 
         @Override

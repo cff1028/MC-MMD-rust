@@ -220,7 +220,7 @@ fn derive_default_body_calibration(model: &mut MmdModel) -> BodyTrackingCalibrat
     model.init_head_detection();
 
     let head_anchor = {
-        let eye_anchor = model.get_eye_bone_animated_position();
+        let eye_anchor = model.get_eye_bone_rest_position();
         if eye_anchor.length_squared() > 1e-6 {
             eye_anchor
         } else {
@@ -553,6 +553,51 @@ mod tests {
             calibration.head_rest_anchor_model,
             Vec3::new(0.0, 17.0, 0.2)
         );
+    }
+
+    #[test]
+    fn derive_default_body_calibration_should_prefer_physical_eyes_over_pmx_eye_control() {
+        let mut model = MmdModel::new();
+        model.bone_manager = make_calibration_test_bones(true, true);
+        let mut control = BoneLink::new("両目".to_string());
+        control.initial_position = Vec3::new(0.0, 22.0, 0.0);
+        control.parent_index = 2;
+        model.bone_manager.add_bone(control);
+        model.bone_manager.build_hierarchy();
+
+        let calibration = derive_default_body_calibration(&mut model);
+
+        assert_vec3_eq(calibration.head_rest_anchor_model, Vec3::new(0.0, 17.0, 0.2));
+    }
+
+    #[test]
+    fn java_body_calibration_should_not_follow_previous_animated_eye_position() {
+        // Cover both the paired-eye and single-eye fallback paths.
+        for has_right_eye in [true, false] {
+            let mut model = MmdModel::new();
+            model.bone_manager = make_calibration_test_bones(true, has_right_eye);
+            let rest_anchor = derive_default_body_calibration(&mut model).head_rest_anchor_model;
+
+            for index in 0..model.bone_manager.bone_count() {
+                let position = model.bone_manager.get_bone(index).unwrap().initial_position;
+                model.bone_manager.set_global_transform(
+                    index,
+                    glam::Mat4::from_translation(position + Vec3::new(1.0, 6.0, -2.0)),
+                );
+            }
+            assert!(model.get_eye_bone_animated_position().distance(rest_anchor) > 1.0);
+
+            let frame = resolve_java_tracking_frame_for_model(
+                &mut model,
+                Some(VrmTrackingInput::default()),
+                HandTrackingCalibration::default(),
+                ArmIkCalibration::default(),
+                BodyTrackingCalibration::default(),
+            )
+            .expect("java frame after animation");
+
+            assert_vec3_eq(frame.body_calibration.head_rest_anchor_model, rest_anchor);
+        }
     }
 
     fn make_calibration_test_bones(has_left_eye: bool, has_right_eye: bool) -> BoneManager {

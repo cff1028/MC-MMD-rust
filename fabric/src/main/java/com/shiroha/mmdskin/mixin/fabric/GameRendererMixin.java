@@ -2,6 +2,7 @@
 package com.shiroha.mmdskin.mixin.fabric;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.shiroha.mmdskin.compat.vr.VRArmHider;
 import com.shiroha.mmdskin.player.runtime.FirstPersonManager;
 import com.shiroha.mmdskin.stage.client.camera.MMDCameraController;
 import net.minecraft.client.Camera;
@@ -36,6 +37,9 @@ public abstract class GameRendererMixin {
 
     @Inject(method = "pick", at = @At("RETURN"), require = 0)
     private void mmdskin$adjustPickResult(float partialTick, CallbackInfo ci) {
+        if (VRArmHider.isLocalVrRuntimeActive()) {
+            return;
+        }
         Minecraft mc = Minecraft.getInstance();
         Player player = mc.player;
         if (player == null || mc.level == null || !FirstPersonManager.shouldUseVanillaReachValidation(player)) {

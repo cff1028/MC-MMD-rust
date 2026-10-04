@@ -19,30 +19,35 @@ final class PlayerRenderSelectionResolver {
         boolean isLocalPlayer = minecraft.player != null && minecraft.player.getUUID().equals(player.getUUID());
         String playerName = player.getName().getString();
         String selectedModel = PlayerModelSyncManager.getPlayerModel(player.getUUID(), playerName, isLocalPlayer);
-        boolean isLocalFirstPerson = isLocalPlayer && minecraft.options.getCameraType().isFirstPerson();
+        boolean inventoryPreview = InventoryEntityRenderScope.isRendering(player);
+        var policy = new PolicyInput(inventoryPreview, isLocalPlayer,
+                minecraft.options.getCameraType().isFirstPerson(),
+                !inventoryPreview && FirstPersonManager.shouldRenderFirstPerson(),
+                !inventoryPreview && VRArmHider.isLocalPlayerInVR(),
+                shouldUseVanillaRenderer(selectedModel, player), isYsmActive);
+        var earlyAction = resolvePolicy(policy);
+        if (earlyAction != null) return PlayerRenderSelection.terminal(earlyAction);
 
-        if (isLocalFirstPerson && !FirstPersonManager.shouldRenderFirstPerson() && !VRArmHider.isLocalPlayerInVR()) {
-            return PlayerRenderSelection.terminal(PlayerMixinDelegate.RenderAction.FALLTHROUGH);
-        }
-
-        if (isLocalPlayer && FirstPersonManager.shouldRenderFirstPerson()) {
-            if (isYsmActive) {
-                return PlayerRenderSelection.terminal(PlayerMixinDelegate.RenderAction.CANCEL);
-            }
-            if (shouldUseVanillaRenderer(selectedModel, player)) {
-                return PlayerRenderSelection.terminal(PlayerMixinDelegate.RenderAction.CANCEL);
-            }
-        }
-
-        if (shouldUseVanillaRenderer(selectedModel, player) || isYsmActive) {
-            return PlayerRenderSelection.terminal(PlayerMixinDelegate.RenderAction.FALLTHROUGH);
-        }
-
-        if (!PlayerPerformanceGate.allowsMmd(player)) {
+        if (!inventoryPreview && !PlayerPerformanceGate.allowsMmd(player)) {
             return PlayerRenderSelection.terminal(PlayerMixinDelegate.RenderAction.FALLTHROUGH);
         }
 
         return PlayerRenderSelection.render(selectedModel, PlayerModelResolver.getCacheKey(player), isLocalPlayer);
+    }
+
+    record PolicyInput(boolean inventoryPreview, boolean localPlayer, boolean firstPersonCamera,
+                       boolean renderDesktopBody, boolean localVr, boolean vanillaModel, boolean ysmActive) {}
+
+    /** GUI previews are independent of world first-person visibility and camera state. */
+    static PlayerMixinDelegate.RenderAction resolvePolicy(PolicyInput input) {
+        if (!input.inventoryPreview) {
+            if (input.localPlayer && input.firstPersonCamera && !input.renderDesktopBody && !input.localVr)
+                return PlayerMixinDelegate.RenderAction.FALLTHROUGH;
+            if (input.localPlayer && input.renderDesktopBody && (input.vanillaModel || input.ysmActive))
+                return PlayerMixinDelegate.RenderAction.CANCEL;
+        }
+        if (input.vanillaModel || input.ysmActive) return PlayerMixinDelegate.RenderAction.FALLTHROUGH;
+        return null;
     }
 
     private static boolean shouldUseVanillaRenderer(String selectedModel, AbstractClientPlayer player) {

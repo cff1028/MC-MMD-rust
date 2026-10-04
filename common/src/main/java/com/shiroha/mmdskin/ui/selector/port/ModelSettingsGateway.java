@@ -7,6 +7,8 @@ public interface ModelSettingsGateway {
 
     void saveConfig(String modelName, ModelConfigData config);
 
+    void previewConfig(String modelName, ModelConfigData config);
+
     String getQuickSlotModel(int slot);
 
     void setQuickSlotModel(int slot, String modelName);

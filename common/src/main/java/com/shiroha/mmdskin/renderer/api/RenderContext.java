@@ -21,11 +21,13 @@ public class RenderContext {
     private final SceneType sceneType;
     private final boolean isFirstPerson;
     private final boolean isMirror;
+    private final boolean poseOnly;
 
     private RenderContext(Builder builder) {
         this.sceneType = builder.sceneType;
         this.isFirstPerson = builder.isFirstPerson;
         this.isMirror = builder.isMirror;
+        this.poseOnly = builder.poseOnly;
     }
 
     public SceneType getSceneType() {
@@ -35,6 +37,8 @@ public class RenderContext {
     public boolean isFirstPerson() {
         return isFirstPerson;
     }
+
+    public boolean isPoseOnly() { return poseOnly; }
 
     public boolean isMirror() {
         return isMirror;
@@ -48,8 +52,16 @@ public class RenderContext {
         return sceneType == SceneType.WORLD;
     }
 
+    public static final RenderContext VR_POSE_ONLY = new Builder().poseOnly(true).build();
+
     public static final RenderContext WORLD = new Builder()
             .sceneType(SceneType.WORLD)
+            .build();
+
+    /** Reuse the current animated pose without advancing animation or physics. */
+    public static final RenderContext MIRROR = new Builder()
+            .sceneType(SceneType.WORLD)
+            .mirror(true)
             .build();
 
     public static final RenderContext INVENTORY = new Builder()
@@ -70,6 +82,8 @@ public class RenderContext {
         private SceneType sceneType = SceneType.WORLD;
         private boolean isFirstPerson = false;
         private boolean isMirror = false;
+        private boolean poseOnly;
+        public Builder poseOnly(boolean value) { poseOnly = value; return this; }
 
         public Builder sceneType(SceneType sceneType) {
             this.sceneType = sceneType;

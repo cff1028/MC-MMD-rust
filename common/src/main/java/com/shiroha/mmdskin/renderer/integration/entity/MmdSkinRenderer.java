@@ -7,9 +7,8 @@ import com.shiroha.mmdskin.MmdSkin;
 import com.shiroha.mmdskin.renderer.api.RenderContext;
 import com.shiroha.mmdskin.renderer.api.RenderParams;
 import com.shiroha.mmdskin.renderer.integration.ModelPropertyHelper;
-import com.shiroha.mmdskin.renderer.integration.player.InventoryRenderHelper;
+import com.shiroha.mmdskin.renderer.integration.player.InventoryEntityRenderScope;
 import com.shiroha.mmdskin.renderer.runtime.model.MMDModelManager;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.CoreShaders;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.entity.EntityRenderer;
@@ -17,7 +16,6 @@ import net.minecraft.client.renderer.entity.EntityRendererProvider;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
-import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 public class MmdSkinRenderer<T extends Entity> extends EntityRenderer<T, MmdEntityRenderState> {
@@ -28,7 +26,6 @@ public class MmdSkinRenderer<T extends Entity> extends EntityRenderer<T, MmdEnti
     protected final String modelName;
 
     private final RenderParams reusableParams = new RenderParams();
-    private final Quaternionf reusableQuat = new Quaternionf();
     private final Vector3f reusableVec = new Vector3f();
     private final float[] reusableSize = new float[2];
 
@@ -59,7 +56,10 @@ public class MmdSkinRenderer<T extends Entity> extends EntityRenderer<T, MmdEnti
             return;
         }
 
-        MMDModelManager.Model model = MMDModelManager.GetModel(modelName, entity.getStringUUID());
+        boolean inventoryPreview = InventoryEntityRenderScope.isRendering(entity);
+        String cacheKey = inventoryPreview
+                ? InventoryEntityRenderScope.previewCacheKey(entity.getStringUUID()) : entity.getStringUUID();
+        MMDModelManager.Model model = MMDModelManager.GetModel(modelName, cacheKey);
         if (model == null) {
             super.render(state, poseStack, bufferSource, packedLight);
             return;
@@ -77,7 +77,7 @@ public class MmdSkinRenderer<T extends Entity> extends EntityRenderer<T, MmdEnti
                 poseStack.scale(0.5f, 0.5f, 0.5f);
             }
 
-            if (InventoryRenderHelper.isInventoryScreen()) {
+            if (inventoryPreview) {
                 renderInInventory(entity, model, state.entityYaw, state.tickDelta, poseStack, packedLight, size);
             } else {
                 poseStack.scale(size[0], size[0], size[0]);
@@ -94,26 +94,17 @@ public class MmdSkinRenderer<T extends Entity> extends EntityRenderer<T, MmdEnti
 
     private void renderInInventory(T entity, MMDModelManager.Model model, float entityYaw,
                                    float tickDelta, PoseStack poseStack, int packedLight, float[] size) {
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.screen == null) {
-            return;
-        }
-
         poseStack.pushPose();
-        poseStack.scale(20.0f, 20.0f, -20.0f);
-        poseStack.scale(size[1], size[1], size[1]);
-
-        reusableQuat.identity()
-                .rotateZ((float) Math.PI)
-                .rotateX(-entity.getXRot() * ((float) Math.PI / 180F))
-                .rotateY(-entity.getYRot() * ((float) Math.PI / 180F));
-        poseStack.mulPose(reusableQuat);
-
-        RenderSystem.setShader(CoreShaders.RENDERTYPE_ENTITY_CUTOUT_NO_CULL);
-        reusableVec.set(0.0f);
-        model.model.render(entity, entityYaw, 0.0f, reusableVec,
-                tickDelta, poseStack, packedLight, RenderContext.INVENTORY);
-        poseStack.popPose();
+        try {
+            poseStack.scale(size[1], size[1], size[1]);
+            RenderSystem.setShader(CoreShaders.RENDERTYPE_ENTITY_CUTOUT_NO_CULL);
+            reusableVec.set(0.0f);
+            float bodyYaw = entity instanceof LivingEntity living ? living.yBodyRot : entityYaw;
+            model.model.render(entity, bodyYaw, 0.0f, reusableVec,
+                    tickDelta, poseStack, packedLight, RenderContext.INVENTORY);
+        } finally {
+            poseStack.popPose();
+        }
     }
 
     private static float[] parseModelSize(MMDModelManager.Model model, float[] out) {

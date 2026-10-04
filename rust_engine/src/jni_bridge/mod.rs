@@ -3,6 +3,7 @@
 mod animation_handle;
 mod model_handle;
 mod native_func;
+mod vr_keyboard;
 
 pub use animation_handle::AnimationHandle;
 pub use model_handle::ModelHandle;

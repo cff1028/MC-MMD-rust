@@ -63,4 +63,11 @@ public abstract class AbstractMmdSkinConfig implements ConfigManager.IConfigProv
 
     @Override public boolean isVREnabled() { return data.vrEnabled; }
     @Override public float getVRArmIKStrength() { return data.vrArmIKStrength; }
+    @Override public boolean isVRModelAboveUi() { return data.vrModelAboveUi; }
+    @Override public boolean isVRKeyboardEnabled() { return data.vrKeyboardEnabled; }
+    @Override public VrKeyboardMode getVRKeyboardMode() { return data.vrKeyboardMode == null ? VrKeyboardMode.AUTO : data.vrKeyboardMode; }
+    @Override public boolean isVRKeyboardImeEnabled() { return data.vrKeyboardImeEnabled; }
+    @Override public boolean isVRKeyboardDragSmoothing() { return data.vrKeyboardDragSmoothing; }
+    @Override public int getVRKeyboardDragPositionMs() { return data.vrKeyboardDragPositionMs; }
+    @Override public int getVRKeyboardDragRotationMs() { return data.vrKeyboardDragRotationMs; }
 }

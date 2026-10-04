@@ -70,6 +70,13 @@ public class ConfigData {
 
     public boolean vrEnabled = false;
     public float vrArmIKStrength = 1.0f;
+    public boolean vrModelAboveUi = false;
+    public boolean vrKeyboardEnabled = false;
+    public VrKeyboardMode vrKeyboardMode = VrKeyboardMode.AUTO;
+    public boolean vrKeyboardImeEnabled = true;
+    public boolean vrKeyboardDragSmoothing = false;
+    public int vrKeyboardDragPositionMs = 120;
+    public int vrKeyboardDragRotationMs = 160;
 
     public Map<String, String> mobModelReplacements = new LinkedHashMap<>();
 
@@ -151,6 +158,9 @@ public class ConfigData {
         maxPhysicsModelsPerFrame = Math.max(1, maxPhysicsModelsPerFrame);
         physicsLodMaxDistance = Math.max(0.0f, physicsLodMaxDistance);
         vrArmIKStrength = !Float.isFinite(vrArmIKStrength) ? 1.0f : clamp(vrArmIKStrength, 0.0f, 1.0f);
+        if (vrKeyboardMode == null) vrKeyboardMode = VrKeyboardMode.AUTO;
+        vrKeyboardDragPositionMs = Math.max(0, Math.min(1000, vrKeyboardDragPositionMs));
+        vrKeyboardDragRotationMs = Math.max(0, Math.min(1000, vrKeyboardDragRotationMs));
     }
 
     private static float clamp(float value, float min, float max) {

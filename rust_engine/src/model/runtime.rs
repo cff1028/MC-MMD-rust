@@ -4,7 +4,7 @@ use crate::animation::{AnimationLayerManager, VmdAnimation};
 use crate::morph::MorphManager;
 use crate::physics::MMDPhysics;
 use crate::skeleton::BoneManager;
-use crate::vr::{VrDebugState, VrIkSolver, VrTrackingFrame};
+use crate::vr::{VrDebugState, VrFingers, VrIkSolver, VrLocomotion, VrLocomotionInput, VrTrackingFrame};
 use crate::vrm_runtime::{
     pmx_controller_hand_tracking_calibration, resolve_java_tracking_frame_for_model,
     resolve_tracking_frame_for_model, vivecraft_body_tracking_calibration,
@@ -211,6 +211,9 @@ pub struct MmdModel {
     vr_ik_solver: VrIkSolver,
     /// 最新一帧 VR 调试遥测
     vr_debug_state: VrDebugState,
+    /// Grounded lower-body gait; advances once per Java render sample.
+    vr_locomotion: VrLocomotion,
+    vr_fingers: VrFingers,
 
     // ======== 矩阵插值过渡 ========
     /// 缓存的蒙皮矩阵（过渡开始时的状态）
@@ -224,6 +227,57 @@ pub struct MmdModel {
 }
 
 impl MmdModel {
+    /// Inventory preview snapshot. Model/world transforms, visibility masks,
+    /// animation clocks and all VR/physics settings belong to the destination.
+    pub fn copy_pose_from(&mut self, source: &Self) -> bool {
+        if self.name != source.name || self.is_vrm != source.is_vrm
+            || self.vertices.len() != source.vertices.len()
+            || self.weights.len() != source.weights.len()
+            || self.materials.len() != source.materials.len()
+            || self.bone_manager.bone_count() != source.bone_manager.bone_count()
+            || self.morph_manager.morph_count() != source.morph_manager.morph_count()
+            || !self.bone_manager.links().zip(source.bone_manager.links()).all(|(a, b)|
+                a.name == b.name && a.parent_index == b.parent_index
+                && a.inverse_init == b.inverse_init && a.rest_rotation == b.rest_rotation)
+            || !(0..self.morph_manager.morph_count()).all(|i| {
+                let a = self.morph_manager.get_morph(i).unwrap();
+                let b = source.morph_manager.get_morph(i).unwrap();
+                a.name == b.name && a.morph_type == b.morph_type
+            })
+        {
+            return false;
+        }
+        self.bone_manager.copy_solved_pose_from(&source.bone_manager);
+        self.morph_manager.copy_pose_from(&source.morph_manager);
+        self.compute_and_cache_effective_weights();
+        self.sync_gpu_morph_weights_from_cache();
+        self.sync_gpu_uv_morph_weights_from_cache();
+
+        // Source CPU buffers may be stale (GPU skinning) or already skinned.
+        // Rebuild only vertex morphs here: reapplying bone morphs would deform
+        // the copied, already solved skeleton a second time.
+        self.update_positions.resize(self.vertices.len(), Vec3::ZERO);
+        self.update_normals.resize(self.vertices.len(), Vec3::ZERO);
+        self.update_uvs.resize(self.vertices.len(), Vec2::ZERO);
+        let uv = self.morph_manager.get_uv_morph_deltas();
+        for (i, vertex) in self.vertices.iter().enumerate() {
+            self.update_positions[i] = vertex.position;
+            self.update_uvs[i] = vertex.uv + uv.get(i).copied().unwrap_or(Vec2::ZERO);
+        }
+        for (i, &weight) in self.effective_weights_buf.iter().enumerate() {
+            if weight == 0.0 { continue; }
+            if let Some(morph) = self.morph_manager.get_morph(i) {
+                for offset in &morph.vertex_offsets {
+                    if let Some(position) = self.update_positions.get_mut(offset.vertex_index as usize) {
+                        *position += offset.offset * weight;
+                    }
+                }
+            }
+        }
+        self.update();
+        true
+    }
+
     /// 创建空模型
     pub fn new() -> Self {
         Self {
@@ -298,6 +352,8 @@ impl MmdModel {
             vr_ik_strength: 1.0,
             vr_ik_solver: VrIkSolver::new(),
             vr_debug_state: VrDebugState::default(),
+            vr_locomotion: VrLocomotion::default(),
+            vr_fingers: VrFingers::default(),
             transition_matrices: Vec::new(),
             transition_progress: 0.0,
             transition_duration: 0.0,
@@ -495,7 +551,21 @@ impl MmdModel {
     }
 
     pub fn apply_java_vr_tracking_input_packet(&mut self, tracking_packet: &[f32]) {
-        if tracking_packet.len() != 21 {
+        self.apply_java_vr_tracking_input_packet_with_scale(
+            tracking_packet,
+            crate::vr::XR_TO_MODEL_SCALE,
+        );
+    }
+
+    pub fn apply_java_vr_tracking_input_packet_with_scale(
+        &mut self,
+        tracking_packet: &[f32],
+        model_units_per_world_unit: f32,
+    ) {
+        if tracking_packet.len() != 21
+            || !model_units_per_world_unit.is_finite()
+            || model_units_per_world_unit <= 0.0
+        {
             return;
         }
 
@@ -521,10 +591,30 @@ impl MmdModel {
             return;
         };
 
+        // Scale the complete tracked pose, including the controller-to-palm offset,
+        // by the inverse of the Java renderer's effective model scale.
+        let tracking_scale = model_units_per_world_unit / crate::vr::XR_TO_MODEL_SCALE;
+        frame.head.position *= tracking_scale;
+        frame.left_palm.position *= tracking_scale;
+        frame.right_palm.position *= tracking_scale;
+
         let defaults = frame.body_calibration;
+        // The HMD tracks the eyes, not the head bone's pivot. Rotate the rest eye
+        // offset with the same model-space head rotation used by the IK solver.
+        let head_rest_anchor_model = self
+            .head_bone_index
+            .and_then(|index| self.bone_manager.get_bone(index))
+            .filter(|_| frame.head.valid)
+            .map(|head| {
+                let head_rotation =
+                    frame.head.rotation * Quat::from_rotation_y(std::f32::consts::PI);
+                head.initial_position
+                    + head_rotation * (defaults.head_rest_anchor_model - head.initial_position)
+            })
+            .unwrap_or(defaults.head_rest_anchor_model);
         let calibration = vivecraft_body_tracking_calibration();
         frame.body_calibration = BodyTrackingCalibration {
-            head_rest_anchor_model: defaults.head_rest_anchor_model,
+            head_rest_anchor_model,
             shoulder_width_model: defaults.shoulder_width_model,
             shoulder_depth_model: defaults.shoulder_depth_model,
             body_yaw_follow_gain: calibration.body_yaw_follow_gain,
@@ -803,6 +893,36 @@ impl MmdModel {
             }
             None => 0.0,
         }
+    }
+
+    /// 获取眼睛骨骼的绑定位置，用于稳定的 VR 身体校准。
+    /// 不能用上一帧动画位置作参考，否则追踪移动会反过来改变校准原点。
+    pub(crate) fn get_eye_bone_rest_position(&mut self) -> Vec3 {
+        self.init_head_detection();
+
+        // PMX "両目" is often an eye-control handle above the head. Prefer the
+        // physical eyes even when that controller was selected for desktop view.
+        let find_eye = |names: &[&str]| {
+            names.iter().find_map(|name| {
+                self.bone_manager
+                    .find_bone_by_name(name)
+                    .and_then(|index| self.bone_manager.get_bone(index))
+                    .map(|bone| bone.initial_position)
+            })
+        };
+        let left = find_eye(&["左目", "eye_L", "Eye_L", "LeftEye"]);
+        let right = find_eye(&["右目", "eye_R", "Eye_R", "RightEye"]);
+        if let (Some(left), Some(right)) = (left, right) {
+            return (left + right) * 0.5;
+        }
+        if let Some(eye) = left.or(right) {
+            return eye;
+        }
+
+        self.eye_bone_index
+            .and_then(|index| self.bone_manager.get_bone(index))
+            .map(|bone| bone.initial_position)
+            .unwrap_or(Vec3::ZERO)
     }
 
     /// 获取眼睛骨骼的当前动画位置（模型局部空间）
@@ -2244,6 +2364,9 @@ impl MmdModel {
             self.sync_gpu_uv_morph_weights_from_cache();
         }
 
+        if self.vr_enabled {
+            self.vr_locomotion.prepare(&mut self.bone_manager, elapsed);
+        }
         self.update_node_animation(false);
 
         if self.vr_enabled {
@@ -2264,6 +2387,10 @@ impl MmdModel {
             self.vr_debug_state = VrDebugState::default();
         }
 
+        if self.vr_enabled {
+            self.vr_locomotion.apply(&mut self.bone_manager);
+            self.vr_fingers.apply(&mut self.bone_manager);
+        }
         self.with_vrm_runtime_state(|model, runtime_state| {
             runtime_state.process_post_ik(model, elapsed);
         });
@@ -2400,11 +2527,25 @@ impl MmdModel {
             physics.get_dynamic_bone_transforms(&self.physics_bone_transforms_buf);
 
         for &(bone_idx, transform) in dynamic_bone_transforms {
+            if self.vr_enabled && (self.vr_locomotion.controls_bone(bone_idx)
+                || self.vr_fingers.controls_bone(bone_idx)) {
+                continue;
+            }
             self.bone_manager
                 .set_global_transform_physics(bone_idx, transform);
         }
 
-        let physics_bone_indices = physics.get_dynamic_bone_indices();
+        // VR leg IK owns only its chains and explicit append copies. Skirt/hair
+        // dynamics still run normally, with the animated legs as collision input.
+        let filtered_indices;
+        let physics_bone_indices = if self.vr_enabled {
+            filtered_indices = physics.get_dynamic_bone_indices().iter().copied()
+                .filter(|&index| !self.vr_locomotion.controls_bone(index)
+                    && !self.vr_fingers.controls_bone(index)).collect();
+            &filtered_indices
+        } else {
+            physics.get_dynamic_bone_indices()
+        };
         self.bone_manager
             .set_physics_bone_indices(physics_bone_indices);
         self.bone_manager
@@ -2481,6 +2622,45 @@ impl MmdModel {
 
     pub fn set_vr_enabled(&mut self, enabled: bool) {
         self.vr_enabled = enabled;
+        if !enabled {
+            self.vr_locomotion.reset();
+            self.vr_fingers.reset();
+        }
+    }
+
+    pub fn set_vr_finger_tracking(&mut self, angles: &[f32; 40], valid_hands: u8) {
+        self.vr_fingers.set_input(angles, valid_hands);
+    }
+
+    pub fn set_vr_thumb_calibration(&mut self, left_twist_radians: f32, right_twist_radians: f32) {
+        self.vr_fingers.set_thumb_calibration(left_twist_radians, right_twist_radians);
+    }
+
+    pub fn set_vr_locomotion(&mut self, sample_id: i64, velocity_x: f32, velocity_z: f32,
+        turn_rate: f32, allowed: bool, crouching: bool) {
+        self.vr_locomotion.set_input(VrLocomotionInput {
+            sample_id, velocity: Vec3::new(velocity_x, 0.0, velocity_z),
+            turn_rate, allowed, crouching,
+        });
+    }
+
+    pub fn set_vr_arm_length_scale(&mut self, scale: f32) {
+        self.vr_ik_solver.set_arm_length_scale(scale);
+    }
+
+    /// Unscaled bind-pose dimensions: eye Y, L/R arm lengths, L/R shoulder xyz.
+    pub fn vr_calibration_dimensions(&mut self) -> [f32; 9] {
+        let eyes = self.get_eye_bone_rest_position();
+        let eye_height = if eyes.y.is_finite() && eyes.y > 0.0 {
+            eyes.y
+        } else {
+            self.get_head_bone_rest_position_y()
+        };
+        let arms = self.vr_ik_solver.arm_calibration_dimensions(&self.bone_manager);
+        let mut dimensions = [0.0; 9];
+        dimensions[0] = eye_height;
+        dimensions[1..].copy_from_slice(&arms);
+        dimensions
     }
 
     pub fn is_vr_enabled(&self) -> bool {
@@ -2837,6 +3017,104 @@ mod tests {
     use crate::vr::{VrTrackedPose, XR_TO_MODEL_SCALE};
     use crate::vrm_runtime::{ArmIkHandCalibration, BodyTrackingCalibration};
 
+    fn pose_copy_model() -> MmdModel {
+        use crate::morph::{Morph, MorphType, VertexMorphOffset, BoneMorphOffset,
+            UvMorphOffset, GroupMorphOffset, MaterialMorphOffset};
+        let mut m = make_material_visibility_test_model();
+        m.name = "pose-copy-fixture".to_owned();
+        let mut wrist = BoneLink::new("左手首".to_owned());
+        wrist.parent_index = 0;
+        wrist.initial_position = Vec3::new(2.0, 1.0, 0.0);
+        m.bone_manager.add_bone(wrist);
+        m.bone_manager.build_hierarchy();
+        m.vertices = vec![RuntimeVertex { position: Vec3::new(3.0, 1.0, 0.0), normal: Vec3::Y, uv: Vec2::new(0.2, 0.3) }];
+        m.weights = vec![VertexWeight::Bdef1 { bone: 1 }];
+        m.update_positions = vec![Vec3::ZERO];
+        m.update_normals = vec![Vec3::ZERO];
+        m.update_uvs = vec![Vec2::ZERO];
+        m.morph_manager.set_vertex_count(1);
+        m.morph_manager.set_material_count(3);
+        let mut vertex = Morph::new("smile".into(), MorphType::Vertex);
+        vertex.vertex_offsets.push(VertexMorphOffset { vertex_index: 0, offset: Vec3::Z });
+        m.morph_manager.add_morph(vertex);
+        let mut bone = Morph::new("finger-expression".into(), MorphType::Bone);
+        bone.bone_offsets.push(BoneMorphOffset { bone_index: 1, translation: Vec3::Y, rotation: Quat::from_rotation_x(0.2).into() });
+        m.morph_manager.add_morph(bone);
+        let mut uv = Morph::new("uv".into(), MorphType::Uv);
+        uv.uv_offsets.push(UvMorphOffset { vertex_index: 0, offset: Vec4::new(0.1, 0.2, 0.0, 0.0) });
+        m.morph_manager.add_morph(uv);
+        let mut material = Morph::new("blush".into(), MorphType::Material);
+        material.material_offsets.push(MaterialMorphOffset { material_index: 0, operation: 1,
+            diffuse: Vec4::new(0.2, 0.0, 0.0, -0.2), specular: Vec3::ZERO, specular_strength: 0.0,
+            ambient: Vec3::ZERO, edge_color: Vec4::ZERO, edge_size: 0.0, texture_tint: Vec4::ZERO,
+            environment_tint: Vec4::ZERO, toon_tint: Vec4::ZERO });
+        m.morph_manager.add_morph(material);
+        let mut group = Morph::new("expression".into(), MorphType::Group);
+        for index in 0..4 { group.group_offsets.push(GroupMorphOffset { morph_index: index, influence: 1.0 }); }
+        m.morph_manager.add_morph(group);
+        m.init_gpu_skinning_data();
+        m.init_gpu_morph_data();
+        m.init_gpu_uv_morph_data();
+        m
+    }
+
+    #[test]
+    fn pose_copy_rebuilds_cpu_from_gpu_pose_and_copies_expression_without_world_flags() {
+        let mut source = pose_copy_model();
+        let mut target = pose_copy_model();
+        source.set_first_person_mode(true);
+        source.set_vr_enabled(true);
+        source.physics_enabled = true;
+        source.model_transform = Mat4::from_translation(Vec3::splat(100.0));
+        source.morph_manager.set_morph_weight(4, 0.5);
+        source.begin_animation();
+        source.bone_manager.set_bone_rotation(0, Quat::from_rotation_y(0.7));
+        source.update_morph_animation();
+        source.update_node_animation(false);
+        source.end_animation();
+        // Emulate GPU source: raw CPU output has never been skinned this frame.
+        source.update_positions_raw = vec![1000.0; 3];
+        let source_hand = source.get_left_hand_matrix();
+        let matrices = source.bone_manager.get_skinning_matrices().to_vec();
+        let expected = matrices[1].transform_point3(source.vertices[0].position + Vec3::Z * 0.5);
+        target.physics_enabled = false;
+        target.set_material_visible(2, false);
+        target.model_transform = Mat4::from_translation(Vec3::new(4.0, 5.0, 6.0));
+        for _ in 0..3 {
+            assert!(target.copy_pose_from(&source));
+            assert!(target.update_positions[0].distance(expected) < 1e-5);
+            assert_eq!(target.update_positions_raw, expected.to_array());
+            assert_eq!(target.bone_manager.get_skinning_matrices(), matrices);
+            assert_eq!(target.get_left_hand_matrix(), source_hand);
+            assert!((target.update_uvs[0] - Vec2::new(0.25, 0.4)).length() < 1e-6);
+            assert_eq!(target.gpu_morph_weights, vec![0.5]);
+            assert_eq!(target.gpu_uv_morph_weights, vec![0.5]);
+            assert_eq!(target.get_material_morph_results_flat(), source.get_material_morph_results_flat());
+            assert!(!target.vr_enabled && !target.first_person_enabled && !target.physics_enabled);
+            assert!(target.is_material_visible(1));
+            assert!(!target.is_material_visible(2));
+            assert_eq!(target.model_transform.w_axis.truncate(), Vec3::new(4.0, 5.0, 6.0));
+            assert_eq!(source.update_positions_raw, vec![1000.0; 3]);
+            assert_eq!(source.get_left_hand_matrix(), source_hand);
+        }
+        // Already-skinned CPU source must produce the same output, not skin twice.
+        source.update();
+        assert!(target.copy_pose_from(&source));
+        assert!(target.update_positions[0].distance(source.update_positions[0]) < 1e-5);
+    }
+
+    #[test]
+    fn pose_copy_rejects_incompatible_skeleton_without_partial_changes() {
+        let source = pose_copy_model();
+        let mut target = pose_copy_model();
+        target.bone_manager.get_bone_mut(1).unwrap().name = "different_joint".to_owned();
+        target.update_positions_raw = vec![7.0; 3];
+        target.morph_manager.set_morph_weight(4, 0.75);
+        assert!(!target.copy_pose_from(&source));
+        assert_eq!(target.update_positions_raw, vec![7.0; 3]);
+        assert_eq!(target.morph_manager.get_morph_weight(4), 0.75);
+    }
+
     #[test]
     fn set_first_person_mode_should_restore_user_material_visibility() {
         let mut model = make_material_visibility_test_model();
@@ -2935,6 +3213,252 @@ mod tests {
             frame.body_calibration.shoulder_width_model,
             body_calibration.shoulder_width_model
         );
+    }
+
+    #[test]
+    fn enabling_vr_before_first_tracking_packet_should_keep_animation_finite() {
+        let mut model = make_vr_tracking_test_model();
+        model.set_vr_enabled(true);
+
+        // Enabling the option can precede the first tracking callback. This uses
+        // VrIkSolver::solve(), whose default body limit has not been resolved yet.
+        model.tick_animation_no_skinning(1.0 / 90.0);
+        assert_vr_model_transforms_finite(&model);
+        assert_eq!(model.bone_manager.get_global_transform(0), Mat4::IDENTITY);
+
+        // The legacy model-space packet entry point also permits default calibration.
+        let mut packet = [0.0; 21];
+        packet[1] = 17.0;
+        packet[6] = 1.0;
+        model.set_vr_tracking_data(&packet);
+        model.tick_animation_no_skinning(1.0 / 90.0);
+        assert_vr_model_transforms_finite(&model);
+        assert_eq!(model.vr_debug_state.head_local_model, Vec3::new(0.0, 17.0, 0.0));
+    }
+
+    #[test]
+    fn java_vr_tracking_packet_should_resolve_calibration_before_animation_update() {
+        let mut model = make_vr_tracking_test_model();
+        model.set_vr_ik_strength(0.4);
+        let head_meters = Vec3::new(0.1, 1.6, -0.2);
+        let packet = [
+            head_meters.x, head_meters.y, head_meters.z, 0.0, 0.0, 0.0, 1.0,
+            0.3, 1.2, -0.3, 0.0, 0.0, 0.0, 1.0,
+            -0.3, 1.2, -0.3, 0.0, 0.0, 0.0, 1.0,
+        ];
+
+        model.apply_java_vr_tracking_input_packet(&packet);
+
+        let frame = model.vr_tracking_frame.expect("resolved Java tracking frame");
+        assert!(model.is_vr_enabled());
+        assert_eq!(model.vr_ik_strength(), 0.4);
+        assert_eq!(frame.head.position, head_meters * XR_TO_MODEL_SCALE);
+        assert!(frame.body_calibration.head_rest_anchor_model.is_finite());
+        assert!(frame.body_calibration.shoulder_width_model > 0.0);
+        assert_eq!(frame.body_calibration.body_translation_clamp_model, 0.0);
+        assert_eq!(frame.body_calibration.horizontal_translation_follow_gain, 1.0);
+        assert_eq!(frame.body_calibration.vertical_translation_follow_gain, 1.0);
+
+        // Exercise the same update used by the JNI GPU-skinning render path.
+        model.tick_animation_no_skinning(1.0 / 90.0);
+        assert_vr_model_transforms_finite(&model);
+        assert_eq!(model.vr_debug_state.head_local_model, frame.head.position);
+    }
+
+    #[test]
+    fn java_vr_tracking_should_align_physical_eyes_across_scale_rotation_and_crouching() {
+        for world_units_per_model_unit in [0.045_f32, 0.09, 0.18] {
+            let mut model = make_vr_eye_tracking_test_model();
+            let left_eye = model.bone_manager.find_bone_by_name("左目").unwrap();
+            let right_eye = model.bone_manager.find_bone_by_name("右目").unwrap();
+            for (head_world, rotation) in [
+                (Vec3::new(0.0, 1.616, 0.0), Quat::IDENTITY),
+                (Vec3::new(0.15, 1.616, -0.2), Quat::from_rotation_x(0.6)),
+                (Vec3::new(-0.2, 0.85, 0.1), Quat::from_rotation_z(-0.4)),
+                (Vec3::new(0.0, 1.616, 0.0), Quat::IDENTITY),
+            ] {
+                let mut packet = [0.0; 21];
+                packet[..3].copy_from_slice(&head_world.to_array());
+                packet[3..7].copy_from_slice(&rotation.to_array());
+                // Identical inputs must keep the same alignment rather than use
+                // the previous animated eye as a new calibration reference.
+                for _ in 0..30 {
+                    model.apply_java_vr_tracking_input_packet_with_scale(
+                        &packet,
+                        world_units_per_model_unit.recip(),
+                    );
+                    model.tick_animation_no_skinning(1.0 / 90.0);
+                    let eyes = (model.bone_manager.get_bone(left_eye).unwrap().position()
+                        + model.bone_manager.get_bone(right_eye).unwrap().position())
+                        * 0.5
+                        * world_units_per_model_unit;
+                    assert!(
+                        eyes.distance(head_world) < 1e-5,
+                        "eyes={eyes:?}, HMD={head_world:?}, scale={world_units_per_model_unit}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn java_vr_scaled_tracking_should_scale_controller_palm_offset_with_rendered_model() {
+        let mut model = make_vr_eye_tracking_test_model();
+        let packet = [
+            0.0, 1.6, 0.0, 0.0, 0.0, 0.0, 1.0,
+            0.3, 1.2, -0.3, 0.0, 0.0, 0.0, 1.0,
+            -0.3, 1.2, -0.3, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let units_per_world_unit = 1.0 / 0.18;
+        model.apply_java_vr_tracking_input_packet_with_scale(&packet, units_per_world_unit);
+
+        let frame = model.vr_tracking_frame.unwrap();
+        let expected_palm_world = Vec3::new(0.3, 1.188, -0.318);
+        assert!((frame.right_palm.position / units_per_world_unit)
+            .distance(expected_palm_world) < 1e-6);
+    }
+
+    #[test]
+    fn vr_calibration_should_keep_original_bone_lengths_before_tracking_and_across_toggles() {
+        let mut model = make_vr_eye_tracking_test_model();
+        for (side, sign) in [("左", -1.0), ("右", 1.0)] {
+            let mut parent = 1;
+            for (name, x) in [("腕", 2.0), ("ひじ", 4.0), ("手首", 6.0)] {
+                let mut bone = BoneLink::new(format!("{side}{name}"));
+                bone.parent_index = parent;
+                bone.initial_position = Vec3::new(x * sign, 12.0, 0.0);
+                model.bone_manager.add_bone(bone);
+                parent = model.bone_manager.bone_count() as i32 - 1;
+            }
+        }
+        model.bone_manager.build_hierarchy();
+        let expected = [17.72, 4.0, 4.0, -2.0, 12.0, 0.0, 2.0, 12.0, 0.0];
+        assert_eq!(model.vr_calibration_dimensions(), expected);
+        model.set_vr_enabled(true);
+        model.set_vr_arm_length_scale(1.25);
+        // Calibration must not deform an avatar even before the controllers arrive.
+        model.tick_animation_no_skinning(1.0 / 90.0);
+        let elbow = model.bone_manager.find_bone_by_name("右ひじ").unwrap();
+        assert!((model.bone_manager.get_bone(elbow).unwrap().body_shift.length() - 2.0).abs() < 1e-6);
+        assert_eq!(model.vr_calibration_dimensions(), expected);
+
+        model.set_vr_enabled(false);
+        model.tick_animation_no_skinning(1.0 / 90.0);
+        assert!((model.bone_manager.get_bone(elbow).unwrap().body_shift.length() - 2.0).abs() < 1e-6);
+        assert_eq!(model.vr_calibration_dimensions(), expected);
+        assert_vr_model_transforms_finite(&model);
+    }
+
+    fn make_vr_eye_tracking_test_model() -> MmdModel {
+        let mut model = make_vr_tracking_test_model();
+        for (name, position) in [
+            ("左目", Vec3::new(-0.3, 17.72, 0.48)),
+            ("右目", Vec3::new(0.3, 17.72, 0.48)),
+            ("両目", Vec3::new(0.0, 22.3, 0.2)),
+        ] {
+            let mut bone = BoneLink::new(name.to_string());
+            bone.parent_index = 3;
+            bone.initial_position = position;
+            model.bone_manager.add_bone(bone);
+        }
+        model.bone_manager.build_hierarchy();
+        model.set_vr_ik_strength(1.0);
+        model
+    }
+
+    #[test]
+    fn vr_locomotion_runtime_should_preserve_tracked_head_and_hands_and_reset_on_disable() {
+        fn make_model() -> MmdModel {
+            let mut model = make_vr_eye_tracking_test_model();
+            for (side, sign) in [("左", -1.0), ("右", 1.0)] {
+                let mut parent = 1;
+                for (name, x) in [("腕", 2.0), ("ひじ", 4.0), ("手首", 6.0)] {
+                    let mut bone = BoneLink::new(format!("{side}{name}"));
+                    bone.parent_index = parent;
+                    bone.initial_position = Vec3::new(x * sign, 12.0, 0.0);
+                    model.bone_manager.add_bone(bone);
+                    parent = model.bone_manager.bone_count() as i32 - 1;
+                }
+                parent = 0;
+                for (name, y, z) in [("足", 9.0, 0.0), ("ひざ", 5.0, 0.2), ("足首", 1.0, 0.0)] {
+                    let mut bone = BoneLink::new(format!("{side}{name}"));
+                    bone.parent_index = parent;
+                    bone.initial_position = Vec3::new(sign, y, z);
+                    model.bone_manager.add_bone(bone);
+                    parent = model.bone_manager.bone_count() as i32 - 1;
+                }
+            }
+            model.bone_manager.build_hierarchy();
+            model
+        }
+        let mut walking = make_model();
+        let mut tracking_only = make_model();
+        let foot = walking.bone_manager.find_bone_by_name("左足首").unwrap();
+        let mut max_foot_difference = 0.0_f32;
+        for sample in 0..160 {
+            let phase = sample as f32 * 0.04;
+            let packet = [
+                phase.sin() * 0.08, 1.40 - phase.sin().abs() * 0.15, 0.0, 0.0, 0.0, 0.0, 1.0,
+                0.32, 0.92, 0.12 + phase.sin() * 0.02, 0.0, 0.0, 0.0, 1.0,
+                -0.32, 0.92, 0.12, 0.0, 0.0, 0.0, 1.0,
+            ];
+            for model in [&mut walking, &mut tracking_only] {
+                model.apply_java_vr_tracking_input_packet_with_scale(&packet, 12.5);
+            }
+            walking.set_vr_locomotion(sample, 3.0, 10.0, 0.4, true, false);
+            walking.tick_animation_no_skinning(1.0 / 90.0);
+            tracking_only.tick_animation_no_skinning(1.0 / 90.0);
+            assert_vr_model_transforms_finite(&walking);
+            for name in ["頭", "左目", "右目", "左腕", "右腕", "左手首", "右手首"] {
+                let index = walking.bone_manager.find_bone_by_name(name).unwrap();
+                assert!(walking.bone_manager.get_global_transform(index).abs_diff_eq(
+                    tracking_only.bone_manager.get_global_transform(index), 1e-4),
+                    "locomotion must not disturb {name}");
+            }
+            max_foot_difference = max_foot_difference.max(
+                walking.bone_manager.get_bone(foot).unwrap().position()
+                    .distance(tracking_only.bone_manager.get_bone(foot).unwrap().position()));
+            let pose: Vec<_> = walking.bone_manager.links().map(|b| b.local_to_world).collect();
+            // A duplicate eye sample has no gait time advance despite a nonzero delta.
+            walking.set_vr_locomotion(sample, 3.0, 10.0, 0.4, true, false);
+            walking.tick_animation_no_skinning(0.02);
+            for (bone, expected) in walking.bone_manager.links().zip(&pose) {
+                assert!(bone.local_to_world.abs_diff_eq(*expected, 1e-4));
+            }
+        }
+        assert!(max_foot_difference > 0.4, "walking must affect the legs");
+        walking.set_vr_enabled(false);
+        walking.tick_animation_no_skinning(1.0 / 90.0);
+        for name in ["左足", "左ひざ", "左足首", "右足", "右ひざ", "右足首"] {
+            let bone = walking.bone_manager.get_bone(walking.bone_manager.find_bone_by_name(name).unwrap()).unwrap();
+            assert!(bone.position().abs_diff_eq(bone.initial_position, 1e-5));
+        }
+    }
+
+    fn make_vr_tracking_test_model() -> MmdModel {
+        let mut model = MmdModel::new();
+        for (name, parent, height) in [
+            ("root", -1, 0.0),
+            ("上半身", 0, 10.0),
+            ("首", 1, 15.0),
+            ("頭", 2, 17.0),
+        ] {
+            let mut bone = BoneLink::new(name.to_string());
+            bone.parent_index = parent;
+            bone.initial_position = Vec3::new(0.0, height, 0.0);
+            model.bone_manager.add_bone(bone);
+        }
+        model.bone_manager.build_hierarchy();
+        model
+    }
+
+    fn assert_vr_model_transforms_finite(model: &MmdModel) {
+        for index in 0..model.bone_manager.bone_count() {
+            assert!(
+                model.bone_manager.get_global_transform(index).is_finite(),
+                "non-finite bone {index} after VR animation update"
+            );
+        }
     }
 
     fn make_material_visibility_test_model() -> MmdModel {

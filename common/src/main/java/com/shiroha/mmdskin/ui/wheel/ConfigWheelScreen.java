@@ -23,6 +23,7 @@ public class ConfigWheelScreen extends AbstractWheelScreen {
 
     private final List<ConfigSlot> configSlots;
     private final KeyMapping monitoredKey;
+    private boolean pointerPressed;
     private static Supplier<Screen> modSettingsScreenFactory;
 
     public ConfigWheelScreen(KeyMapping keyMapping) {
@@ -68,6 +69,7 @@ public class ConfigWheelScreen extends AbstractWheelScreen {
     @Override
     protected void init() {
         super.init();
+        pointerPressed = false;
         initWheelLayout();
     }
 
@@ -111,6 +113,32 @@ public class ConfigWheelScreen extends AbstractWheelScreen {
                 }
             }
         }
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+            pointerPressed = true;
+            updateSelectedSlot((int) mouseX, (int) mouseY);
+            return true;
+        }
+        return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && pointerPressed) {
+            pointerPressed = false;
+            updateSelectedSlot((int) mouseX, (int) mouseY);
+            if (selectedSlot >= 0 && selectedSlot < configSlots.size()) {
+                ConfigSlot slot = configSlots.get(selectedSlot);
+                // Consume the release here so it cannot select an item in the newly opened wheel.
+                onClose();
+                slot.action.run();
+            }
+            return true;
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
     }
 
     private List<WheelEntry> buildEntries() {

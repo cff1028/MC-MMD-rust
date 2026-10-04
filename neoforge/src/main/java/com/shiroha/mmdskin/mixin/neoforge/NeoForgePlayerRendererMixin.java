@@ -6,6 +6,7 @@ import com.shiroha.mmdskin.compat.vr.VRArmHider;
 import com.shiroha.mmdskin.neoforge.YsmCompat;
 import com.shiroha.mmdskin.player.runtime.FirstPersonManager;
 import com.shiroha.mmdskin.renderer.integration.player.PlayerMixinDelegate;
+import com.shiroha.mmdskin.renderer.integration.player.InventoryEntityRenderScope;
 import com.shiroha.mmdskin.renderer.integration.player.PlayerMixinDelegate.RenderAction;
 import com.shiroha.mmdskin.renderer.integration.state.LivingEntityRenderStateBridge;
 import net.minecraft.client.Minecraft;
@@ -21,6 +22,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(LivingEntityRenderer.class)
 public abstract class NeoForgePlayerRendererMixin {
+    // Vivecraft 1.21.4 的 VRPlayerRenderer 继承这条渲染状态路径，也由此处接管。
+    // 不再向 VRPlayerRenderer 注入旧版 render(AbstractClientPlayer, ...) 方法。
     @Inject(
         method = "render(Lnet/minecraft/client/renderer/entity/state/LivingEntityRenderState;Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/MultiBufferSource;I)V",
         at = @At("HEAD"),
@@ -39,7 +42,7 @@ public abstract class NeoForgePlayerRendererMixin {
         float tickDelta = ((LivingEntityRenderStateBridge) playerState).mmdskin$getTickDelta();
         Minecraft minecraft = Minecraft.getInstance();
         boolean isLocalPlayer = minecraft.player != null && minecraft.player.getUUID().equals(player.getUUID());
-        if (isLocalPlayer && minecraft.options.getCameraType().isFirstPerson()
+        if (!InventoryEntityRenderScope.isRendering(player) && isLocalPlayer && minecraft.options.getCameraType().isFirstPerson()
                 && !FirstPersonManager.shouldRenderFirstPerson() && !VRArmHider.isLocalPlayerInVR()) {
             FirstPersonManager.reset();
             return;
@@ -51,6 +54,8 @@ public abstract class NeoForgePlayerRendererMixin {
 
         PlayerMixinDelegate.renderSceneModel(player, tickDelta, matrixStack, packedLight);
         if (action == RenderAction.CANCEL) {
+            com.shiroha.mmdskin.compat.vr.mirror.VrMirrorNameTags.render(
+                    player, playerState, matrixStack, vertexConsumers, packedLight, tickDelta);
             ci.cancel();
         }
     }

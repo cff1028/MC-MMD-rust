@@ -262,6 +262,43 @@ EntityPlayer/
 - Rust 1.70+（用于 rust_engine）
 - JDK 21+（用于 Minecraft mod）
 - Gradle 8.x
+- C++ 编译工具链（Windows：Visual Studio 的“使用 C++ 的桌面开发”，包含 MSVC 和 Windows SDK）
+
+### 准备 Bullet3 源码依赖
+
+Rust 引擎通过 `build.rs` 编译 Bullet3 C++ 源码，必须存在
+`rust_engine/deps/bullet3/src/LinearMath` 等目录；只有空的 `bullet3` 目录无法构建。
+IDEA 的 Cargo 同步和 NeoForge Client 启动都会执行此脚本。
+
+如果项目是 Git 克隆，在项目根目录执行：
+
+```bash
+git submodule update --init --recursive
+```
+
+如果项目来自源码 ZIP、没有 `.git`，且 `rust_engine/deps/bullet3` 为空或不存在，
+在项目根目录执行以下命令。这里固定到上游 `v1.0.5-1.21.4` 使用的 Bullet3 提交，
+稀疏检出仅下载构建所需的 `src` 和仓库根目录文件：
+
+```bash
+git init rust_engine/deps/bullet3
+git -C rust_engine/deps/bullet3 remote add origin https://github.com/bulletphysics/bullet3.git
+git -C rust_engine/deps/bullet3 config remote.origin.promisor true
+git -C rust_engine/deps/bullet3 config remote.origin.partialclonefilter blob:none
+git -C rust_engine/deps/bullet3 sparse-checkout init --cone
+git -C rust_engine/deps/bullet3 sparse-checkout set src
+git -C rust_engine/deps/bullet3 fetch --depth=1 --filter=blob:none origin 63c4d67e337017f9d8b298c900e9aabdb69296e7
+git -C rust_engine/deps/bullet3 checkout --detach FETCH_HEAD
+```
+
+如果 Git 下载失败，也可下载同一提交的
+[Bullet3 源码归档](https://api.github.com/repos/bulletphysics/bullet3/tarball/63c4d67e337017f9d8b298c900e9aabdb69296e7)，
+将归档内顶层目录中的 `src`、`LICENSE.txt` 和 `VERSION` 放入
+`rust_engine/deps/bullet3/`。注意不要多嵌套一层归档目录。
+已有完整依赖时无需重复初始化或下载。
+
+依赖准备好后，可运行 `cargo check --manifest-path rust_engine/Cargo.toml` 验证，
+再在 IDEA 中重新加载 Cargo 项目和 Gradle 项目。
 
 ### 构建 rust_engine
 

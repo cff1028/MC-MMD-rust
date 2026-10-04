@@ -4,6 +4,7 @@ plugins {
 }
 
 def isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
+apply from: rootProject.file('gradle/spatial-ui.gradle')
 
 architectury {
 	platformSetupLoomIde()
@@ -76,6 +77,14 @@ repositories {
 }
 
 dependencies {
+    // Use Minecraft's LWJGL ABI; NanoVG is a shared nested library, never a second GLFW/OpenGL runtime.
+    common("org.lwjgl:lwjgl-nanovg:${spatialUiLwjglVersion}") { transitive = false }
+    include("org.lwjgl:lwjgl-nanovg:${spatialUiLwjglVersion}") { transitive = false }
+    runtimeOnly("org.lwjgl:lwjgl-nanovg:${spatialUiLwjglVersion}:${spatialUiHostNativeClassifier}") { transitive = false }
+    spatialUiNativeClassifiers.each { classifier ->
+        shadowBundle("org.lwjgl:lwjgl-nanovg:${spatialUiLwjglVersion}:${classifier}") { transitive = false }
+    }
+
 	implementation project(":common")
 	common(project(path: ":common", configuration: "namedElements")) { transitive = false }
 	shadowCommon(project(path: ":common", configuration: "transformProductionFabric")) { transitive = false }

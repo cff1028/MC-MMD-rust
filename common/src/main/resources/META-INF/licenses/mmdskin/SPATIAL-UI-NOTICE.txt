@@ -1,0 +1,23 @@
+Spatial menu graphics dependencies
+
+LWJGL NanoVG Java bindings and native libraries: LWJGL 3.3.3, BSD-3-Clause.
+  https://github.com/LWJGL/lwjgl3/tree/3.3.3
+  Full terms: LWJGL-3.3.3-LICENSE.txt
+
+NanoVG: Copyright (c) 2013 Mikko Mononen, zlib license.
+  Full terms: nanovg-LICENSE.txt
+FontStash: Copyright (c) 2009-2013 Mikko Mononen, zlib license.
+  Full terms: fontstash-LICENSE.txt
+stb_truetype: Copyright (c) 2017 Sean Barrett, MIT license.
+  Full terms: stb-truetype-LICENSE.txt
+FontStash UTF-8 decoder: Copyright (c) 2008-2010 Bjoern Hoehrmann, MIT license.
+  https://bjoern.hoehrmann.de/utf-8/decoder/dfa/
+  Full upstream terms: fontstash-utf8-LICENSE.txt
+
+NanoVG/FontStash license text is copied from LWJGL 3.3.3's bundled headers;
+stb_truetype license text is copied from that release's bundled stb header.
+The native NanoVG implementations are distributed without source changes.
+The Java UI and Minecraft rendering adapters are MMD Skin integration code.
+
+System fonts, including Microsoft YaHei, are read from the user's operating
+system. No system font files are included in this distribution.

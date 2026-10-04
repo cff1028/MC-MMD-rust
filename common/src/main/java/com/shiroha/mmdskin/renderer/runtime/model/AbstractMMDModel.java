@@ -54,11 +54,49 @@ public abstract class AbstractMMDModel implements IMMDModel {
     protected List<String> textureKeys;
 
     private volatile boolean vrActive;
+    private long lastVrAnimationFrame = Long.MIN_VALUE;
     protected final AtomicLong nativeUpdateRevision = new AtomicLong(0L);
+    private long inventoryPoseSourceHandle;
+    private long inventoryPoseSourceRevision = Long.MIN_VALUE;
+    private long inventoryPoseTargetRevision = Long.MIN_VALUE;
 
-    public void setVrActive(boolean active) { this.vrActive = active; }
+    public void setVrActive(boolean active) {
+        if (vrActive != active) lastVrAnimationFrame = Long.MIN_VALUE;
+        this.vrActive = active;
+    }
 
     public boolean isVrActive() { return vrActive; }
+
+    /**
+     * Draw the world's last solved VR pose on this independent inventory instance.
+     * GUI rotations are applied only by doRenderModel; neither model advances its
+     * animation, tracking or physics here. False asks the caller to draw the usual idle preview.
+     */
+    public boolean renderInventoryPoseFrom(AbstractMMDModel source, Entity entity, float entityYaw,
+                                           PoseStack matrixStack, int packedLight) {
+        if (source == null || source == this || model == 0 || source.model == 0 || model == source.model
+                || vrActive || !source.vrActive || !isReady() || !source.isReady()
+                || !getModelName().equals(source.getModelName())) {
+            return false;
+        }
+        long sourceRevision = source.getNativeUpdateRevision();
+        if (sourceRevision <= 0) return false;
+
+        applyPhysicsState(false);
+        getNf().SetFirstPersonMode(model, false);
+        long targetRevision = getNativeUpdateRevision();
+        if (inventoryPoseSourceHandle != source.model || inventoryPoseSourceRevision != sourceRevision
+                || inventoryPoseTargetRevision != targetRevision) {
+            if (!getNf().CopyModelPose(source.model, model)) return false;
+            inventoryPoseSourceHandle = source.model;
+            inventoryPoseSourceRevision = sourceRevision;
+            inventoryPoseTargetRevision = nativeUpdateRevision.incrementAndGet();
+        }
+        // Switching out of VR resumes idle animation without accumulating time spent viewing a snapshot.
+        lastUpdateTime = System.currentTimeMillis();
+        doRenderModel(entity, entityYaw, 0.0f, new Vector3f(), matrixStack, packedLight);
+        return true;
+    }
 
     protected static NativeFunc getNf() {
         if (nf == null) nf = NativeFunc.GetInst();
@@ -71,6 +109,25 @@ public abstract class AbstractMMDModel implements IMMDModel {
                        int packedLight, RenderContext context) {
         if (model == 0 || !isReady()) return;
 
+        if (com.shiroha.mmdskin.compat.vr.mirror.VrMirrorScenePass.isRendering()
+                || (context != null && context.isWorldScene() && context.isMirror())) {
+            if (context == null || !context.isPoseOnly()) doRenderModel(entityIn, entityYaw, entityPitch, entityTrans, mat, packedLight);
+            return;
+        }
+
+        // A VR frame contains multiple eye/camera draws. Advance animation and physics once.
+        // Returning before applyPhysicsState also avoids disabling physics in the second eye.
+        if (vrActive && context != null && context.isWorldScene() && isLocalPlayer(entityIn)) {
+            long frame = com.shiroha.mmdskin.compat.vr.VivecraftReflectionBridge.getRenderFrameId();
+            if (frame != Long.MIN_VALUE) {
+                if (lastVrAnimationFrame == frame) {
+                    if (context == null || !context.isPoseOnly()) doRenderModel(entityIn, entityYaw, entityPitch, entityTrans, mat, packedLight);
+                    return;
+                }
+                lastVrAnimationFrame = frame;
+            }
+        }
+
         if (entityIn instanceof LivingEntity living) {
             handleLivingEntity(living, entityYaw, entityPitch, entityTrans,
                     tickDelta, mat, packedLight, context);
@@ -81,7 +138,7 @@ public abstract class AbstractMMDModel implements IMMDModel {
         if (shouldUpdate) {
             update();
         }
-        doRenderModel(entityIn, entityYaw, entityPitch, entityTrans, mat, packedLight);
+        if (context == null || !context.isPoseOnly()) doRenderModel(entityIn, entityYaw, entityPitch, entityTrans, mat, packedLight);
     }
 
     @Override
@@ -171,7 +228,7 @@ public abstract class AbstractMMDModel implements IMMDModel {
             RenderPerformanceProfiler.get().endTimer(RenderPerformanceProfiler.SECTION_LIVING_STATE_SYNC, syncTimer);
             update();
         }
-        doRenderModel(entityIn, entityYaw, entityPitch, entityTrans, mat, packedLight);
+        if (context == null || !context.isPoseOnly()) doRenderModel(entityIn, entityYaw, entityPitch, entityTrans, mat, packedLight);
     }
 
     protected void update() {
@@ -307,6 +364,11 @@ public abstract class AbstractMMDModel implements IMMDModel {
     }
 
     private boolean resolvePhysicsEnabled(Entity entity, RenderContext context, boolean localPlayer, boolean shouldUpdate) {
+        // Inventory previews have their own model instance and a stable local origin.
+        // GUI mouse rotations must not simulate movement through the game world.
+        if (context != null && context.isInventoryScene()) {
+            return false;
+        }
         if (context == null || !context.isWorldScene()) {
             return ConfigManager.isPhysicsEnabled();
         }

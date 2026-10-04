@@ -41,6 +41,23 @@ pub struct BoneSet {
 }
 
 impl BoneSet {
+    /// Copy a solved pose without evaluating IK, append transforms or physics again.
+    /// The caller validates that both skeletons have identical bind layouts.
+    pub(crate) fn copy_solved_pose_from(&mut self, source: &Self) {
+        for (dst, src) in self.links.iter_mut().zip(&source.links) {
+            dst.animation_translate = src.animation_translate;
+            dst.animation_rotate = src.animation_rotate;
+            dst.ik_rotate = src.ik_rotate;
+            dst.append_translate = src.append_translate;
+            dst.append_rotate = src.append_rotate;
+            dst.local_to_parent = src.local_to_parent;
+            dst.local_to_world = src.local_to_world;
+            dst.parent_to_world = src.parent_to_world;
+        }
+        // These include the source's final transition blend, if one is active.
+        self.skinning_matrices.clone_from(&source.skinning_matrices);
+    }
+
     /// 创建空的骨骼集合
     pub fn new() -> Self {
         Self {

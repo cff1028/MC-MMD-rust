@@ -72,4 +72,9 @@ public interface VrRuntimePort {
     void setModelVrEnabled(long modelHandle, boolean enabled);
 
     void updateModelVr(long modelHandle, Player player, float tickDelta, float armIkStrength);
+
+    default void updateModelVr(long modelHandle, Player player, float tickDelta, float armIkStrength,
+                               float worldUnitsPerModelUnit) {
+        updateModelVr(modelHandle, player, tickDelta, armIkStrength);
+    }
 }

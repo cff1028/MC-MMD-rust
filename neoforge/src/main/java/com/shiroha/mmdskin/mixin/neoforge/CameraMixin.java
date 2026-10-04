@@ -2,6 +2,7 @@
 package com.shiroha.mmdskin.mixin.neoforge;
 
 import com.shiroha.mmdskin.config.ConfigManager;
+import com.shiroha.mmdskin.compat.vr.VRArmHider;
 import com.shiroha.mmdskin.neoforge.YsmCompat;
 import com.shiroha.mmdskin.player.runtime.FirstPersonManager;
 import com.shiroha.mmdskin.stage.client.camera.MMDCameraController;
@@ -37,6 +38,10 @@ public abstract class CameraMixin {
                     this.setRotation(controller.getCameraYaw(), controller.getCameraPitch());
                 }
             }
+            return;
+        }
+
+        if (VRArmHider.isLocalVrRuntimeActive()) {
             return;
         }
 

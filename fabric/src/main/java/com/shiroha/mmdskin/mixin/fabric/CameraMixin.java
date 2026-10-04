@@ -1,6 +1,7 @@
 package com.shiroha.mmdskin.mixin.fabric;
 
 import com.shiroha.mmdskin.config.ConfigManager;
+import com.shiroha.mmdskin.compat.vr.VRArmHider;
 import com.shiroha.mmdskin.fabric.YsmCompat;
 import com.shiroha.mmdskin.stage.client.camera.MMDCameraController;
 import com.shiroha.mmdskin.player.runtime.FirstPersonManager;
@@ -40,6 +41,9 @@ public abstract class CameraMixin {
                 }
             }
         } else {
+            if (VRArmHider.isLocalVrRuntimeActive()) {
+                return;
+            }
             boolean vrEyeCameraActive = FirstPersonManager.isVrEyeCameraActive();
             boolean eyeCameraActive = FirstPersonManager.isEyeCameraActive();
             boolean eyeAnchorReady = vrEyeCameraActive || FirstPersonManager.isEyeBoneValid();

@@ -30,10 +30,16 @@ public final class PlayerMixinDelegate {
             return selection.terminalAction();
         }
 
-        MMDModelManager.Model modelData = MMDModelManager.GetModel(selection.selectedModel(), selection.playerCacheKey());
+        boolean inventoryPreview = InventoryEntityRenderScope.isRendering(player);
+        String cacheKey = inventoryPreview
+                ? InventoryEntityRenderScope.previewCacheKey(selection.playerCacheKey())
+                : selection.playerCacheKey();
+        MMDModelManager.Model modelData = MMDModelManager.GetModel(selection.selectedModel(), cacheKey);
 
         if (modelData == null) {
-            if (MMDModelManager.isModelPending(selection.selectedModel(), selection.playerCacheKey())) {
+            // A GUI preview loads its own native model; keep a vanilla figure visible in the meantime.
+            if (inventoryPreview) return RenderAction.FALLTHROUGH;
+            if (MMDModelManager.isModelPending(selection.selectedModel(), cacheKey)) {
                 return RenderAction.CANCEL;
             }
             return RenderAction.SUPER_RENDER;
@@ -52,6 +58,7 @@ public final class PlayerMixinDelegate {
 
     public static void renderSceneModel(AbstractClientPlayer player, float tickDelta,
                                          PoseStack matrixStack, int packedLight) {
+        if (InventoryEntityRenderScope.isRendering(player)) return;
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || !mc.player.getUUID().equals(player.getUUID())) return;
 

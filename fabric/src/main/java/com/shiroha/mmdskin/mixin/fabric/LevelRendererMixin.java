@@ -23,8 +23,25 @@ public abstract class LevelRendererMixin {
         method = "renderLevel(Lcom/mojang/blaze3d/resource/GraphicsResourceAllocator;Lnet/minecraft/client/DeltaTracker;ZLnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/GameRenderer;Lorg/joml/Matrix4f;Lorg/joml/Matrix4f;)V",
         at = @At("HEAD")
     )
-    private void mmdskin$beginRenderFrame(CallbackInfo ci) {
+    private void mmdskin$beginRenderFrame(com.mojang.blaze3d.resource.GraphicsResourceAllocator allocator,
+            net.minecraft.client.DeltaTracker deltaTracker, boolean outline, Camera camera,
+            net.minecraft.client.renderer.GameRenderer renderer, org.joml.Matrix4f view,
+            org.joml.Matrix4f projection, CallbackInfo ci) {
         PlayerPerformanceGate.beginRenderFrame();
+        com.shiroha.mmdskin.compat.vr.mirror.VrMirrorRenderer.beginEye(camera, view,
+                deltaTracker.getGameTimeDeltaPartialTick(false));
+    }
+
+    @Inject(
+        method = "renderLevel(Lcom/mojang/blaze3d/resource/GraphicsResourceAllocator;Lnet/minecraft/client/DeltaTracker;ZLnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/GameRenderer;Lorg/joml/Matrix4f;Lorg/joml/Matrix4f;)V",
+        at = @At("TAIL")
+    )
+    private void mmdskin$renderVrMirror(com.mojang.blaze3d.resource.GraphicsResourceAllocator allocator,
+            net.minecraft.client.DeltaTracker deltaTracker, boolean outline, Camera camera,
+            net.minecraft.client.renderer.GameRenderer renderer, org.joml.Matrix4f view,
+            org.joml.Matrix4f projection, CallbackInfo ci) {
+        com.shiroha.mmdskin.compat.vr.mirror.VrMirrorRenderer.finishEye();
+        com.shiroha.mmdskin.compat.vr.VrCalibrationHudRenderer.render(camera, view);
     }
 
     @Redirect(

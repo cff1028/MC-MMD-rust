@@ -41,6 +41,7 @@ final class FabricClientRuntimeHooks {
     }
 
     private void onClientTick(Minecraft minecraft) {
+        com.shiroha.mmdskin.compat.vr.VrLinkedActions.tick();
         LocalPlayer player = minecraft.player;
         if (player == null) {
             return;

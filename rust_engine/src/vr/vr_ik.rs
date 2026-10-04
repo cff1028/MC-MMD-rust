@@ -333,6 +333,8 @@ pub struct VrIkSolver {
     cache: BoneCache,
     left_zero_wrist_offset_warned: bool,
     right_zero_wrist_offset_warned: bool,
+    // User shoulder-to-controller reach divided by the rendered avatar's rest reach.
+    arm_length_scale: f32,
 }
 
 impl VrIkSolver {
@@ -341,6 +343,7 @@ impl VrIkSolver {
             cache: BoneCache::default(),
             left_zero_wrist_offset_warned: false,
             right_zero_wrist_offset_warned: false,
+            arm_length_scale: 1.0,
         }
     }
 
@@ -398,6 +401,39 @@ impl VrIkSolver {
             body_calibration,
         );
         let _ = self.solve_tracking_frame(bones, &frame, strength);
+    }
+
+    pub fn set_arm_length_scale(&mut self, scale: f32) {
+        if scale.is_finite() {
+            self.arm_length_scale = scale.clamp(0.25, 4.0);
+        }
+    }
+
+    pub(crate) fn arm_calibration_dimensions(&mut self, bones: &BoneManager) -> [f32; 8] {
+        self.ensure_cache(bones);
+        let mut dimensions = [0.0; 8];
+        for (side, arm, wrist) in [
+            (0, self.cache.left_arm, self.cache.left_wrist),
+            (1, self.cache.right_arm, self.cache.right_wrist),
+        ] {
+            if let Some(arm) = arm {
+                if let Some(position) = bone_bind_position(bones, arm) {
+                    dimensions[2 + side * 3..5 + side * 3]
+                        .copy_from_slice(&position.to_array());
+                }
+                if let Some(chain) = wrist.and_then(|wrist| collect_parent_chain(bones, arm, wrist)) {
+                    dimensions[side] = chain
+                        .windows(2)
+                        .map(|pair| {
+                            let from = bone_bind_position(bones, pair[0]).unwrap_or(Vec3::ZERO);
+                            let to = bone_bind_position(bones, pair[1]).unwrap_or(from);
+                            (to - from).length()
+                        })
+                        .sum();
+                }
+            }
+        }
+        dimensions
     }
 
     pub(crate) fn solve_tracking_frame(
@@ -591,6 +627,15 @@ impl VrIkSolver {
             _ => return ArmSolveResult::default(),
         };
 
+        // The socket follows the posed torso, but never chases an unreachable hand.
+        let arm_origin = self.resolve_arm_origin(
+            bones,
+            shoulder_idx,
+            arm_idx,
+            calibration,
+            head_residual_model,
+            strength,
+        );
         let arm_pos = mat4_translation(bones.get_global_transform(arm_idx));
         let lower_chain = LowerArmChain::from_bones(bones, elbow_idx, wrist_idx);
         let elbow_pos = lower_chain
@@ -605,35 +650,36 @@ impl VrIkSolver {
         }
 
         let side = HandSide::from_left(is_left);
+        let retargeted_palm = VrTrackedPose {
+            position: arm_origin + (target.position - arm_origin) / self.arm_length_scale,
+            ..*target
+        };
         let wrist_target = self.resolve_wrist_target(
             bones,
             wrist_idx,
-            target,
+            &retargeted_palm,
             side,
             manual_wrist_offset(arm_ik_calibration, side),
             arm_ik_calibration.hand_face_flip,
             manual_wrist_rotation_offset(arm_ik_calibration, side),
         );
-        let arm_origin = self.resolve_arm_origin(
-            bones,
-            shoulder_idx,
-            arm_idx,
-            wrist_target.position,
-            calibration,
-            head_residual_model,
-            upper_len + lower_len,
-            strength,
-            is_left,
-        );
-        let target_pos = wrist_target.position;
-        let to_target = target_pos - arm_origin;
+        let to_target = wrist_target.position - arm_origin;
         let chain_len = upper_len + lower_len;
-        let target_dist = to_target.length().min(chain_len * 0.999);
-        if target_dist < 1e-4 {
-            return ArmSolveResult::default();
-        }
-
-        let forward = to_target / to_target.length();
+        // Stay away from both straight-arm and fully folded singularities. The
+        // desired target can leave this annulus; the bones themselves cannot stretch.
+        let reach_margin = upper_len.min(lower_len) * 0.002;
+        let target_dist = to_target.length().clamp(
+            (upper_len - lower_len).abs() + reach_margin,
+            chain_len - reach_margin,
+        );
+        let forward = if to_target.length_squared() > 1e-8 {
+            to_target.normalize()
+        } else {
+            (lower_chain.old_positions.last().copied().unwrap_or(elbow_pos) - arm_origin)
+                .try_normalize()
+                .unwrap_or(Vec3::NEG_Z)
+        };
+        let reachable_target = arm_origin + forward * target_dist;
         let elbow_offset = elbow_pos - arm_origin;
         let elbow_proj = forward * elbow_offset.dot(forward);
         let hint_raw = elbow_offset - elbow_proj;
@@ -646,7 +692,9 @@ impl VrIkSolver {
                 Vec3::new(0.3, -0.5, -0.7)
             };
             let proj = forward * default_hint.dot(forward);
-            (default_hint - proj).normalize_or_zero()
+            (default_hint - proj).try_normalize().unwrap_or_else(|| {
+                forward.any_orthonormal_vector()
+            })
         };
 
         let cos_a = ((upper_len * upper_len + target_dist * target_dist - lower_len * lower_len)
@@ -657,8 +705,7 @@ impl VrIkSolver {
         let elbow_new = arm_origin
             + forward * (angle_a.cos() * upper_len)
             + hint_dir * (angle_a.sin() * upper_len);
-        let elbow_to_target = (target_pos - elbow_new).normalize_or_zero();
-        let wrist_new = elbow_new + elbow_to_target * lower_len;
+        let wrist_new = reachable_target;
         let lower_chain_targets = lower_chain.target_positions(elbow_new, wrist_new);
 
         let solved_wrist_model = self.apply_arm_result(
@@ -771,17 +818,13 @@ impl VrIkSolver {
         bones: &mut BoneManager,
         shoulder_idx: Option<usize>,
         arm_idx: usize,
-        wrist_target_position: Vec3,
         calibration: &BodyTrackingCalibration,
         head_residual_model: Vec3,
-        chain_len: f32,
         strength: f32,
-        is_left: bool,
     ) -> Vec3 {
-        let fallback_origin = bone_bind_position(bones, arm_idx)
-            .unwrap_or_else(|| mat4_translation(bones.get_global_transform(arm_idx)));
+        let fallback_origin = bone_rest_position_in_current_parent(bones, arm_idx);
         let mut origin = shoulder_idx
-            .and_then(|index| bone_bind_position(bones, index))
+            .map(|index| bone_rest_position_in_current_parent(bones, index))
             .unwrap_or(fallback_origin);
 
         let shoulder_follow = Vec3::new(
@@ -790,20 +833,6 @@ impl VrIkSolver {
             head_residual_model.z,
         ) * calibration.shoulder_follow_gain;
         origin += shoulder_follow;
-
-        let to_target = wrist_target_position - origin;
-        let overflow = (to_target.length() - chain_len).max(0.0);
-        if overflow > 1e-4 {
-            let side_sign = if is_left { -1.0 } else { 1.0 };
-            let lateral_bias = Vec3::new(
-                side_sign * calibration.shoulder_width_model * 0.05,
-                0.0,
-                -calibration.shoulder_depth_model * 0.15,
-            );
-            origin += (to_target.normalize_or_zero() + lateral_bias).normalize_or_zero()
-                * (overflow * calibration.shoulder_follow_gain)
-                    .min(calibration.shoulder_depth_model);
-        }
 
         if let Some(shoulder_idx) = shoulder_idx {
             let current_transform = bones.get_global_transform(shoulder_idx);
@@ -911,6 +940,21 @@ fn bone_bind_position(bones: &BoneManager, index: usize) -> Option<Vec3> {
     bones.get_bone(index).map(|bone| bone.initial_position)
 }
 
+fn bone_rest_position_in_current_parent(bones: &BoneManager, index: usize) -> Vec3 {
+    let Some(bone) = bones.get_bone(index) else {
+        return Vec3::ZERO;
+    };
+    // Follow the posed torso instead of pinning the shoulder to bind-world space.
+    // Reconstructing from the parent also avoids accumulating the IK shoulder offset.
+    bone.parent_id()
+        .map(|parent| {
+            bones
+                .get_global_transform(parent)
+                .transform_point3(bone.body_shift)
+        })
+        .unwrap_or(bone.body_shift)
+}
+
 fn bone_bind_global_rotation(bones: &BoneManager, index: usize) -> Quat {
     bones
         .get_bone(index)
@@ -930,7 +974,9 @@ fn extract_yaw_rotation(rotation: Quat) -> Quat {
 }
 
 fn clamp_scalar(value: f32, limit: f32) -> f32 {
-    if limit <= 1e-6 {
+    // The legacy packet path can reach the solver before model calibration resolves
+    // the NaN default. An unspecified/non-finite limit means no translation clamp.
+    if !limit.is_finite() || limit <= 1e-6 {
         value
     } else {
         value.clamp(-limit, limit)
@@ -1593,13 +1639,14 @@ mod tests {
     }
 
     #[test]
-    fn solve_tracking_frame_should_limit_head_only_hand_drift() {
+    fn solve_tracking_frame_should_limit_head_only_hand_drift_while_targets_remain_reachable() {
         let (_, calibration) = make_tracking_test_skeleton();
         let mut solver = VrIkSolver::new();
+        // Bent arms leave room for the torso to move without exceeding fixed reach.
         let rest = make_tracking_frame(
             calibration.head_rest_anchor_model,
-            Vec3::new(-4.8, 11.7, 1.8),
-            Vec3::new(4.8, 11.7, 1.8),
+            Vec3::new(-3.4, 12.0, 0.6),
+            Vec3::new(3.4, 12.0, 0.6),
             calibration,
         );
         let moved_head = make_tracking_frame(
@@ -1876,6 +1923,306 @@ mod tests {
         let second_rotation = mat4_rotation(bones.get_global_transform(body_idx));
 
         assert_quat_eq(second_rotation, first_rotation);
+    }
+
+    #[test]
+    fn solve_tracking_frame_should_handle_unresolved_and_unbounded_body_limits() {
+        for limit in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -1.0] {
+            assert_body_tracking_translation(limit, Vec3::new(8.0, 0.0, -9.0));
+        }
+    }
+
+    #[test]
+    fn solve_tracking_frame_should_preserve_finite_body_translation_limits() {
+        assert_body_tracking_translation(2.0, Vec3::new(2.0, 0.0, -2.0));
+        assert_body_tracking_translation(10.0, Vec3::new(8.0, 0.0, -9.0));
+    }
+
+    fn assert_body_tracking_translation(limit: f32, expected_translation: Vec3) {
+        let (mut bones, calibration) = make_tracking_test_skeleton();
+        let mut solver = VrIkSolver::new();
+        let frame = VrTrackingFrame {
+            head: VrTrackedPose {
+                position: calibration.head_rest_anchor_model + Vec3::new(8.0, 0.0, -9.0),
+                rotation: Quat::IDENTITY,
+                valid: true,
+            },
+            body_calibration: BodyTrackingCalibration {
+                horizontal_translation_follow_gain: 1.0,
+                body_translation_clamp_model: limit,
+                ..calibration
+            },
+            ..VrTrackingFrame::default()
+        };
+
+        let debug = solver.solve_tracking_frame(&mut bones, &frame, 1.0);
+        assert_vec3_near(debug.body_anchor_model, expected_translation, 1e-5);
+        for index in 0..bones.bone_count() {
+            assert!(
+                bones.get_global_transform(index).is_finite(),
+                "non-finite bone {index} with body limit {limit}"
+            );
+        }
+    }
+
+    #[test]
+    fn vr_shoulders_and_arms_should_follow_crouching_and_translated_torso() {
+        for delta in [Vec3::new(0.0, -5.0, 0.0), Vec3::new(2.0, -3.0, -1.0)] {
+            let (mut bones, defaults) = make_tracking_test_skeleton();
+            let calibration = BodyTrackingCalibration {
+                horizontal_translation_follow_gain: 1.0,
+                vertical_translation_follow_gain: 1.0,
+                body_translation_clamp_model: 0.0,
+                shoulder_follow_gain: 0.0,
+                ..defaults
+            };
+            let mut solver = VrIkSolver::new();
+            solver.set_arm_length_scale(1.4);
+            let rest = make_tracking_frame(
+                calibration.head_rest_anchor_model,
+                Vec3::new(-4.8, 11.7, 1.8),
+                Vec3::new(4.8, 11.7, 1.8),
+                calibration,
+            );
+            solver.solve_tracking_frame(&mut bones, &rest, 1.0);
+            let names = [
+                "左肩", "左腕", "左ひじ", "左手首", "右肩", "右腕", "右ひじ", "右手首",
+            ];
+            let baseline: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    let index = bones.find_bone_by_name(name).unwrap();
+                    (index, mat4_translation(bones.get_global_transform(index)))
+                })
+                .collect();
+            let moved = make_tracking_frame(
+                rest.head.position + delta,
+                rest.left_palm.position + delta,
+                rest.right_palm.position + delta,
+                calibration,
+            );
+            // Repeated frames must not leave the shoulders behind or keep stretching them.
+            for _ in 0..30 {
+                solver.solve_tracking_frame(&mut bones, &moved, 1.0);
+                for &(index, position) in &baseline {
+                    assert_vec3_near(
+                        mat4_translation(bones.get_global_transform(index)),
+                        position + delta,
+                        2e-3,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vr_arm_calibration_should_preserve_segments_helpers_and_fingers_without_accumulation() {
+        let (mut bones, defaults, elbow, helper, wrist, _) =
+            make_tracking_test_skeleton_with_lower_arm_helper();
+        let arm = bones.find_bone_by_name("右腕").unwrap();
+        let shoulder = bones.find_bone_by_name("右肩").unwrap();
+        let mut branch = BoneLink::new("右腕捩1".to_string());
+        branch.parent_index = arm as i32;
+        branch.initial_position = bone_bind_position(&bones, arm).unwrap()
+            .lerp(bone_bind_position(&bones, elbow).unwrap(), 0.5);
+        branch.flags = BoneFlags::ROTATABLE | BoneFlags::APPEND_ROTATE;
+        branch.append_config = Some(AppendConfig { parent: arm as i32, rate: 0.5 });
+        bones.add_bone(branch);
+        bones.build_hierarchy();
+        let branch_index = bones.find_bone_by_name("右腕捩1").unwrap();
+        let branch_rest_length = bones.get_bone(branch_index).unwrap().body_shift.length();
+        let finger = bones.find_bone_by_name("右中指１").unwrap();
+        let finger_rest_length = bones.get_bone(finger).unwrap().body_shift.length();
+        let chain = [arm, elbow, helper, wrist];
+        let original_lengths: Vec<_> = chain
+            .windows(2)
+            .map(|pair| {
+                (mat4_translation(bones.get_global_transform(pair[1]))
+                    - mat4_translation(bones.get_global_transform(pair[0])))
+                .length()
+            })
+            .collect();
+        let original_shoulder = mat4_translation(bones.get_global_transform(shoulder));
+        let original_offsets: Vec<_> = (0..bones.bone_count())
+            .map(|index| bones.get_bone(index).unwrap().body_shift)
+            .collect();
+        let calibration = BodyTrackingCalibration {
+            shoulder_follow_gain: 0.0,
+            ..defaults
+        };
+        let frame = make_tracking_frame(
+            calibration.head_rest_anchor_model,
+            Vec3::new(-4.8, 11.7, 1.8),
+            Vec3::new(5.5, 11.9, 0.5),
+            calibration,
+        );
+        let mut solver = VrIkSolver::new();
+        let dimensions = solver.arm_calibration_dimensions(&bones);
+        for scale in [1.65, 2.5, 4.0, 0.25, 0.7, 1.0] {
+            solver.set_arm_length_scale(scale);
+            for _ in 0..30 {
+                solver.solve_tracking_frame(&mut bones, &frame, 1.0);
+                for (pair, length) in chain.windows(2).zip(&original_lengths) {
+                    let actual = (mat4_translation(bones.get_global_transform(pair[1]))
+                        - mat4_translation(bones.get_global_transform(pair[0])))
+                    .length();
+                    assert!(
+                        (actual - length).abs() < 2e-3,
+                        "segment {pair:?} stretched at reach ratio {scale}: {actual} != {length}"
+                    );
+                }
+                assert_vec3_near(
+                    mat4_translation(bones.get_global_transform(shoulder)),
+                    original_shoulder,
+                    1e-5,
+                );
+                let branch_length = mat4_translation(bones.get_global_transform(branch_index))
+                    .distance(mat4_translation(bones.get_global_transform(arm)));
+                assert!((branch_length - branch_rest_length).abs() < 2e-3);
+                let finger_length = mat4_translation(bones.get_global_transform(finger))
+                    .distance(mat4_translation(bones.get_global_transform(wrist)));
+                assert!((finger_length - finger_rest_length).abs() < 2e-3);
+                assert_eq!(solver.arm_calibration_dimensions(&bones), dimensions);
+                for (index, offset) in original_offsets.iter().enumerate() {
+                    assert_eq!(&bones.get_bone(index).unwrap().body_shift, offset);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vr_arm_calibration_should_map_controller_travel_about_the_posed_socket() {
+        for scale in [0.25, 0.6, 1.0, 1.65, 2.5, 4.0] {
+            for body_delta in [Vec3::ZERO, Vec3::new(3.0, -4.0, -2.0)] {
+                let (mut bones, defaults) = make_tracking_test_skeleton();
+                let calibration = BodyTrackingCalibration {
+                    horizontal_translation_follow_gain: 1.0,
+                    vertical_translation_follow_gain: 1.0,
+                    body_translation_clamp_model: 0.0,
+                    ..defaults
+                };
+                let mut solver = VrIkSolver::new();
+                solver.set_arm_length_scale(scale);
+                let arm = bones.find_bone_by_name("右腕").unwrap();
+                let wrist = bones.find_bone_by_name("右手首").unwrap();
+                let origin = bone_bind_position(&bones, arm).unwrap() + body_delta;
+                let palm = origin + Vec3::new(0.9, -0.4, 0.9) * scale;
+                let mut frame = make_tracking_frame(
+                    calibration.head_rest_anchor_model + body_delta,
+                    Vec3::new(-4.8, 11.7, 1.8) + body_delta,
+                    palm,
+                    calibration,
+                );
+                let mapped = VrTrackedPose {
+                    position: origin + (palm - origin) / scale,
+                    ..frame.right_palm
+                };
+                let expected = solver.resolve_wrist_target(
+                    &bones, wrist, &mapped, HandSide::Right, Vec3::ZERO, false, Quat::IDENTITY,
+                );
+                let before = solver.solve_tracking_frame(&mut bones, &frame, 1.0);
+                assert_vec3_near(before.right_wrist_solved_model, expected.position, 2e-3);
+
+                let controller_delta = Vec3::new(0.2, 0.1, -0.15);
+                frame.right_palm.position += controller_delta;
+                let after = solver.solve_tracking_frame(&mut bones, &frame, 1.0);
+                assert_vec3_near(
+                    after.right_wrist_solved_model - before.right_wrist_solved_model,
+                    controller_delta / scale,
+                    2e-3,
+                );
+                assert_vec3_near(mat4_translation(bones.get_global_transform(arm)), origin, 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn unreachable_vr_hands_should_keep_bones_and_torso_fixed_with_a_stable_bend() {
+        let (mut bones, calibration, elbow, helper, wrist, _) =
+            make_tracking_test_skeleton_with_lower_arm_helper();
+        let arm = bones.find_bone_by_name("右腕").unwrap();
+        let shoulder = bones.find_bone_by_name("右肩").unwrap();
+        let origin = mat4_translation(bones.get_global_transform(arm));
+        let original_shoulder = bones.get_global_transform(shoulder);
+        let upper_length = origin.distance(mat4_translation(bones.get_global_transform(elbow)));
+        let lower_length = LowerArmChain::from_bones(&bones, elbow, wrist).total_length;
+        let mut solver = VrIkSolver::new();
+        solver.set_arm_length_scale(1.3);
+        let offset = solver.resolve_wrist_target(
+            &bones, wrist, &VrTrackedPose { valid: true, rotation: Quat::IDENTITY, ..Default::default() },
+            HandSide::Right, Vec3::ZERO, false, Quat::IDENTITY,
+        ).position;
+        let direction = Vec3::new(0.8, -0.3, -0.5).normalize();
+        let mut baseline = None;
+        for distance in [10.0, 100.0, 1000.0, 10.0] {
+            let frame = make_tracking_frame(
+                calibration.head_rest_anchor_model,
+                Vec3::new(-4.8, 11.7, 1.8),
+                origin + (direction * distance - offset) * 1.3,
+                calibration,
+            );
+            for _ in 0..30 {
+                solver.solve_tracking_frame(&mut bones, &frame, 1.0);
+                let elbow_position = mat4_translation(bones.get_global_transform(elbow));
+                let wrist_position = mat4_translation(bones.get_global_transform(wrist));
+                assert_vec3_near(mat4_translation(bones.get_global_transform(arm)), origin, 1e-5);
+                assert_vec3_near(mat4_translation(bones.get_global_transform(0)), Vec3::ZERO, 1e-5);
+                assert_vec3_near(mat4_translation(bones.get_global_transform(shoulder)),
+                    mat4_translation(original_shoulder), 1e-5);
+                assert!((elbow_position.distance(origin) - upper_length).abs() < 2e-3);
+                assert!((LowerArmChain::from_bones(&bones, elbow, wrist).total_length - lower_length).abs() < 2e-3);
+                assert!(wrist_position.distance(origin) < upper_length + lower_length - 1e-4);
+                let bend = elbow_position - origin - direction * (elbow_position - origin).dot(direction);
+                assert!(bend.length() > 1e-3, "overreach must retain an elbow bend");
+                if let Some((previous_elbow, previous_wrist)) = baseline {
+                    assert_vec3_near(elbow_position, previous_elbow, 2e-3);
+                    assert_vec3_near(wrist_position, previous_wrist, 2e-3);
+                } else {
+                    baseline = Some((elbow_position, wrist_position));
+                }
+                for index in [arm, elbow, helper, wrist] {
+                    assert!(bones.get_global_transform(index).is_finite());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vr_wrist_at_shoulder_should_fold_without_nan_or_changing_segment_lengths() {
+        let (mut bones, calibration) = make_tracking_test_skeleton();
+        let arm = bones.find_bone_by_name("右腕").unwrap();
+        let elbow = bones.find_bone_by_name("右ひじ").unwrap();
+        let wrist = bones.find_bone_by_name("右手首").unwrap();
+        let origin = mat4_translation(bones.get_global_transform(arm));
+        let upper_length = origin.distance(mat4_translation(bones.get_global_transform(elbow)));
+        let lower_length = LowerArmChain::from_bones(&bones, elbow, wrist).total_length;
+        let mut solver = VrIkSolver::new();
+        let offset = solver.resolve_wrist_target(
+            &bones, wrist, &VrTrackedPose { valid: true, rotation: Quat::IDENTITY, ..Default::default() },
+            HandSide::Right, Vec3::ZERO, false, Quat::IDENTITY,
+        ).position;
+        let frame = make_tracking_frame(
+            calibration.head_rest_anchor_model,
+            Vec3::new(-4.8, 11.7, 1.8),
+            origin - offset,
+            calibration,
+        );
+        let mut baseline = None;
+        for _ in 0..60 {
+            let debug = solver.solve_tracking_frame(&mut bones, &frame, 1.0);
+            let elbow_position = mat4_translation(bones.get_global_transform(elbow));
+            assert!((elbow_position.distance(origin) - upper_length).abs() < 2e-3);
+            assert!((debug.right_wrist_solved_model.distance(elbow_position) - lower_length).abs() < 2e-3);
+            assert!(debug.right_wrist_solved_model.distance(origin) < (upper_length - lower_length).abs() + 0.01);
+            for index in 0..bones.bone_count() {
+                assert!(bones.get_global_transform(index).is_finite());
+            }
+            if let Some(previous) = baseline {
+                assert_vec3_near(debug.right_wrist_solved_model, previous, 2e-3);
+            } else {
+                baseline = Some(debug.right_wrist_solved_model);
+            }
+        }
     }
 
     fn make_test_hand_bind_pose(

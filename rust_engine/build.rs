@@ -2,21 +2,46 @@
 ///
 /// 使用 cc crate 编译 Bullet3 源码和 C Wrapper，
 /// 生成静态库链接到 Rust cdylib。
+use std::path::{Path, PathBuf};
 
-fn main() {
-    let bullet3_dir = "deps/bullet3/src";
-    let wrapper_dir = "bullet_wrapper";
-
-    // 收集所有 Bullet3 .cpp 文件
-    let mut cpp_files: Vec<String> = Vec::new();
-
-    // LinearMath（排除 TaskScheduler 线程相关文件，我们不需要多线程物理）
-    for entry in std::fs::read_dir(format!("{}/LinearMath", bullet3_dir)).unwrap() {
-        let path = entry.unwrap().path();
+fn collect_cpp_files(dir: &Path, cpp_files: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|err| {
+        format!(
+            "Cannot read Bullet3 source directory {}: {err}",
+            dir.display()
+        )
+    })?;
+    for entry in entries {
+        let path = entry
+            .map_err(|err| format!("Cannot read entry in {}: {err}", dir.display()))?
+            .path();
         if path.extension().map_or(false, |e| e == "cpp") {
-            cpp_files.push(path.to_string_lossy().into_owned());
+            cpp_files.push(path);
         }
     }
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
+    let bullet3_dir = manifest_dir.join("deps/bullet3/src");
+    let wrapper_dir = manifest_dir.join("bullet_wrapper");
+
+    if !bullet3_dir.join("LinearMath").is_dir() {
+        return Err(format!(
+            "Bullet3 sources are missing at {}. From a Git checkout, run \
+             `git submodule update --init --recursive` in the project root. \
+             For a source ZIP without .git, follow the Bullet3 setup instructions in README.md.",
+            bullet3_dir.display()
+        )
+        .into());
+    }
+
+    // 收集所有 Bullet3 .cpp 文件
+    let mut cpp_files: Vec<PathBuf> = Vec::new();
+
+    // LinearMath
+    collect_cpp_files(&bullet3_dir.join("LinearMath"), &mut cpp_files)?;
 
     // BulletCollision 子目录
     let collision_subdirs = [
@@ -27,15 +52,8 @@ fn main() {
         "Gimpact",
     ];
     for subdir in &collision_subdirs {
-        let dir = format!("{}/BulletCollision/{}", bullet3_dir, subdir);
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries {
-                let path = entry.unwrap().path();
-                if path.extension().map_or(false, |e| e == "cpp") {
-                    cpp_files.push(path.to_string_lossy().into_owned());
-                }
-            }
-        }
+        let dir = bullet3_dir.join("BulletCollision").join(subdir);
+        collect_cpp_files(&dir, &mut cpp_files)?;
     }
 
     // BulletDynamics 子目录
@@ -48,15 +66,8 @@ fn main() {
         "Vehicle",
     ];
     for subdir in &dynamics_subdirs {
-        let dir = format!("{}/BulletDynamics/{}", bullet3_dir, subdir);
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries {
-                let path = entry.unwrap().path();
-                if path.extension().map_or(false, |e| e == "cpp") {
-                    cpp_files.push(path.to_string_lossy().into_owned());
-                }
-            }
-        }
+        let dir = bullet3_dir.join("BulletDynamics").join(subdir);
+        collect_cpp_files(&dir, &mut cpp_files)?;
     }
 
     // 排除依赖缺失头文件的源文件
@@ -64,17 +75,22 @@ fn main() {
         "btCollisionWorldImporter",
         "btSerializer64", // 64位序列化，不需要
     ];
-    cpp_files.retain(|f| !exclude_files.iter().any(|ex| f.contains(ex)));
+    cpp_files.retain(|f| {
+        !exclude_files
+            .iter()
+            .any(|ex| f.to_string_lossy().contains(ex))
+    });
+    cpp_files.sort();
 
     // C Wrapper
-    cpp_files.push(format!("{}/bw_api.cpp", wrapper_dir));
+    cpp_files.push(wrapper_dir.join("bw_api.cpp"));
 
     // 编译 Bullet3 + C Wrapper
     let mut build = cc::Build::new();
     build
         .cpp(true)
-        .include(bullet3_dir)
-        .include(wrapper_dir)
+        .include(&bullet3_dir)
+        .include(&wrapper_dir)
         .warnings(false)
         .opt_level(2);
 
@@ -108,6 +124,7 @@ fn main() {
     }
 
     // 重新编译条件
-    println!("cargo:rerun-if-changed={}", wrapper_dir);
-    println!("cargo:rerun-if-changed={}", bullet3_dir);
+    println!("cargo:rerun-if-changed={}", wrapper_dir.display());
+    println!("cargo:rerun-if-changed={}", bullet3_dir.display());
+    Ok(())
 }

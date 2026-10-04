@@ -35,6 +35,9 @@ public class NativeFunc {
 
     public native boolean IsVrmModel(long model);
 
+    /** Copy solved model-local pose/morphs into a compatible preview without advancing either simulation. */
+    public native boolean CopyModelPose(long sourceModel, long destinationModel);
+
     public native void DeleteModel(long model);
 
     public native void UpdateModel(long model, float deltaTime);
@@ -310,9 +313,33 @@ public class NativeFunc {
 
     public native void SetVRTrackingData(long model, float[] trackingData);
 
+    /** 接收玩家局部坐标（米），由原生端完成模型单位转换和 VR 校准。 */
+    public native void ApplyVRTrackingInput(long model, float[] trackingData);
+
+    /** 按模型实际渲染比例转换追踪坐标；比例单位为模型单位/世界米。 */
+    public native void ApplyVRTrackingInputScaled(long model, float[] trackingData, float modelUnitsPerWorldUnit);
+
     public native void SetVREnabled(long model, boolean enabled);
 
     public native void SetVRIKParams(long model, float armIKStrength);
 
+    /** 用户有效臂长 / 当前模型静止臂长，默认 1，范围 0.25~4.0；仅映射手目标，不缩放骨骼。 */
+    public native void SetVRArmLengthScale(long model, float scale);
+
+    /** 同追踪数据的模型局部坐标：速度为模型单位/秒，转速为绕+Y右手旋转的弧度/秒。
+     * sampleId 每个主渲染帧唯一，双眼共享；不在镜面中采样。allowed 仅限可步行的着地状态。 */
+    public native void SetVRLocomotion(long model, long sampleId, float velocityXModel,
+            float velocityZModel, float turnRateRadians, boolean allowed, boolean crouching);
+
+    /** 原始模型单位：[静止眼高Y, 左臂长, 右臂长, 左肩关节xyz, 右肩关节xyz]。 */
+    public native float[] GetVRCalibrationDimensions(long model);
+
     public native void SetVRHandMode(long model, int mode);
+
+    /** Left 20 angles then right 20: 15 knuckle flexions and 5 base splays in radians.
+     * validHands bit 0 = left, bit 1 = right. Missing hands retain their ordinary animation. */
+    public native void SetVRFingerTracking(long model, float[] jointAngles, int validHands);
+
+    /** Rotate each thumb's curl plane about its rest finger direction; radians, left then right. */
+    public native void SetVRThumbCalibration(long model, float leftTwistRadians, float rightTwistRadians);
 }

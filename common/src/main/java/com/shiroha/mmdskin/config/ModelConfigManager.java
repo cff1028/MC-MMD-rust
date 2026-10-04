@@ -52,6 +52,15 @@ public class ModelConfigManager {
         safeCopy.save(configFile);
     }
 
+    /** Applies a defensive, normalized preview without writing the model's saved JSON file. */
+    public static void previewConfig(String modelName, ModelConfigData config) {
+        if (modelName == null || modelName.isEmpty()
+                || modelName.equals(UIConstants.DEFAULT_MODEL_NAME)) {
+            return;
+        }
+        cache.put(modelName, config == null ? new ModelConfigData() : config.normalizedCopy());
+    }
+
     public static void invalidate(String modelName) {
         cache.remove(modelName);
     }

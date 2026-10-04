@@ -55,6 +55,7 @@ public final class MmdSkinRegisterClient {
     public static void Register() {
         KeyMappingUtil.setBoundKeyGetter(KeyMapping::getKey);
         ConfigWheelScreen.setModSettingsScreenFactory(() -> ModConfigScreen.create(null));
+        com.shiroha.mmdskin.compat.vr.VrLinkedActions.setVrSettingsScreenFactory(() -> ModConfigScreen.createVr(null));
         NETWORK_BINDINGS.register();
         NeoForge.EVENT_BUS.register(RUNTIME_HOOKS);
     }
