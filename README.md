@@ -1,39 +1,67 @@
 # MC-MMD-rust
 
-在 Minecraft 1.21.4 中实现 MMD（MikuMikuDance）模型渲染和物理模拟的 Mod。
+在 Minecraft 1.21.4 中实现 MMD（MikuMikuDance）/ VRM 模型渲染、动画、物理模拟和 Vivecraft VR 交互的 Mod，支持 Fabric 与 NeoForge。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+## 当前分支与下载
+
+- Minecraft：**1.21.4**；分支：[`1.21.4`](https://github.com/cff1028/MC-MMD-rust/tree/1.21.4)。
+- 当前模组版本：**1.0.5-1.21.4-1**。
+- [下载本次 Windows x64 Release](https://github.com/cff1028/MC-MMD-rust/releases/tag/1.0.5-1.21.4-1-windows-x64)：按加载器选择 Fabric 或 NeoForge JAR，只安装其中一个。
+- 本次附件仅包含 **Windows x64 的 Rust 原生引擎**，需要 64 位 Java 21。其他操作系统或 CPU 架构需要另行构建对应原生库。
+
 ## 功能特性
 
-- **PMX 模型加载**: 在 Minecraft 中加载和渲染 MMD 模型
+- **模型加载**: 支持 PMX / PMD，以及 VRM 模型运行时
 - **VMD 动画播放**: 支持骨骼和表情变形的 MMD 动画播放
-- **物理模拟**: 使用 Rapier3D 实现头发、衣物、配饰的实时物理效果
+- **物理模拟**: 使用 Bullet3 实现 MMD 刚体与关节物理效果
 - **GPU 蒙皮**: 通过 Compute Shader 实现高性能顶点蒙皮
 - **多层动画**: 支持多个动画同时混合播放
+- **VR 模型交互**: Vivecraft 头手追踪、手臂 IK、手指追踪、身高与臂长校准、移动步态
+- **空间菜单**: 在 VR 中管理模型、材质、动作、表情、舞台、世界与设置
+- **VR 指针、镜子与键盘**: 双手指针、可移动镜子、虚拟键盘及 Windows 输入法桥接
+
+### 本次更新（1.0.5-1.21.4-1）
+
+本次源码更新基于 `92450b2`，主要变化如下：
+
+- 新增基于 NanoVG 的 Lumen 空间菜单，接入实际模型、材质、动作、舞台和世界列表，并支持预览、滚动及原版设置界面衔接。
+- 新增 VR 双手指针、独立菜单按键、手柄调试与手部设置；支持 SteamVR 手部骨骼数据和手指姿态驱动。
+- 新增 T 字站姿校准、头显前方校准提示、模型眼位与手持物品调整；改进手臂 IK、转身和移动步态，保留模型骨骼比例。
+- 新增可移动 VR 镜子及 `off / low / high` 模式，并加入场景镜面渲染和 Sodium 兼容处理。
+- 新增射线、手部、手指和自动模式的 VR 键盘，以及 Windows 文本输入、输入法组合文本和候选词桥接。
+- 更新 Fabric / NeoForge 的渲染集成和 NanoVG 原生库打包，补充相关回归测试，并完善 Bullet3 源码缺失时的构建提示。
 
 ## 架构
 
 本项目由两个主要部分组成：
 
 1. **rust_engine**: 基于 Rust 的 MMD 物理和动画引擎
-   - PMX/VMD 格式解析
+   - PMX / PMD / VMD 解析与 VRM 运行时
    - 骨骼层次管理
-   - 物理模拟（Rapier3D）
+   - 物理模拟（Bullet3 C++ 源码与 Rust 包装层）
+   - VR IK、手指和移动步态、Windows 键盘文本服务
    - JNI 绑定用于 Java 交互
 
 2. **Minecraft Mod**（Common/Fabric/NeoForge）: 基于 Java 的渲染和集成
    - OpenGL 模型渲染
    - Compute Shader 蒙皮
    - Iris 光影兼容
+   - Vivecraft 交互与 NanoVG 空间菜单
 
 ## 使用教程
 
 ### 安装
 
-1. 将模组 `.jar` 文件放入 `.minecraft/mods/` 目录
-2. 启动游戏，模组会自动创建 `3d-skin` 资源目录
-3. 将自己的模型和动画文件放入对应目录（详见下文）
+1. 准备 **Minecraft 1.21.4、64 位 Java 21 和 Windows x64**，选择一种加载器：
+   - **Fabric**：本次构建使用 Fabric Loader `0.17.2`；安装适用于 1.21.4 的 Fabric API（构建依赖为 `0.107.3+1.21.4`）。
+   - **NeoForge**：本次构建使用 NeoForge `21.4.157`。
+2. 从上述 Release 下载对应的 `*-windows-x64.jar`，放入当前游戏实例的 `mods/` 目录。JAR 已内嵌 Architectury API、Cloth Config、NanoVG 和 Windows x64 引擎，无需另行复制 DLL。
+3. 若使用 VR 功能，额外安装与 Minecraft 和加载器版本匹配的 **Vivecraft**；手指追踪取决于设备及 SteamVR 提供的数据。
+4. 启动游戏，模组会自动创建 `3d-skin` 资源目录。将模型和动画放入对应目录（详见下文）。
+
+升级时替换旧版 MMD Skin JAR，保留 `3d-skin/` 和 `config/mmdskin/` 中的模型、动画与配置。
 
 ### 目录结构
 
@@ -44,7 +72,7 @@
 └── 3d-skin/
     ├── EntityPlayer/          # 玩家模型目录
     │   ├── 模型A/             # 每个子文件夹是一个模型，文件夹名就是模型名
-    │   │   ├── model.pmx      # 模型文件（支持 .pmx/.pmd）
+    │   │   ├── model.pmx      # 模型文件（支持 .pmx/.pmd/.vrm）
     │   │   ├── *.png          # 贴图文件
     │   │   ├── anims/         # 模型专属动画子文件夹（推荐）
     │   │   │   ├── idle.vmd   # 覆盖该模型的待机动画
@@ -69,16 +97,18 @@
 
 | 文件类型 | 扩展名 | 说明 |
 |---------|--------|------|
-| 模型文件 | `.pmx` / `.pmd` | 必需，PMX 优先于 PMD |
+| 模型文件 | `.pmx` / `.pmd` / `.vrm` | 必需，扫描顺序为 PMX、PMD、VRM |
 | 贴图文件 | `.png` / `.jpg` / `.bmp` / `.tga` | 模型引用的贴图 |
 | 专属动画 | `.vmd` | 可选，推荐放入 `anims/` 子文件夹 |
 | 动画映射 | `animations.json` | 可选，通过 UI 自动生成 |
 | 专属表情 | `.vpd` | 可选，仅该模型可用 |
 
 **模型识别规则**：
-- 扫描每个子文件夹，查找 `.pmx` 或 `.pmd` 文件
+- 扫描每个子文件夹，按 `.pmx`、`.pmd`、`.vrm` 顺序查找模型文件
 - 若文件夹内有多个模型文件，优先选择 `model.pmx` 或 `model.pmd`
 - 若无 `model.*`，则按文件名排序选择第一个
+
+下文的 VMD / VPD 动画和表情示例以 MMD 模型为主；VRM 的骨骼与表情由对应运行时处理。
 
 **示例**：
 ```
@@ -239,7 +269,7 @@ EntityPlayer/
 按住 `Alt` → 选择「模型切换」进入：
 
 - 显示 `EntityPlayer/` 下所有可用模型
-- 显示模型格式（PMX/PMD）、文件名、文件大小
+- 显示模型格式、文件名、文件大小
 - 点击模型卡片立即切换
 - 选择「默认」恢复原版玩家皮肤渲染
 - 点击「刷新」重新扫描模型目录
@@ -255,13 +285,25 @@ EntityPlayer/
 
 配置保存在 `.minecraft/config/mmdskin/` 目录下。
 
+### Vivecraft VR 使用
+
+进入 Vivecraft VR 模式并选择模型后，可使用以下功能：
+
+- **空间菜单**：将右手摇杆向前推至触发区打开快捷面板；用手柄射线瞄准、扳机选择，摇杆滚动列表。菜单中的模型、材质、动作、表情与设置连接游戏中的实际数据。
+- **模型校准**：在 VR 模型设置中启动「T 字站姿：校准身高与臂长」。站稳并平伸双臂，先松开扳机，按头显前方提示等待姿势稳定后确认；返回设置后预览并保存。也可手动调整眼位、模型缩放和手持物品。
+- **手部与指针**：使用手部设置、指针设置与手柄调试界面调整交互。手指跟随需要兼容设备提供追踪数据。
+- **镜子**：从 MMD 的 VR 功能页开启镜子，按界面提示移动或切换 `off / low / high`。场景镜面与当前渲染器不兼容时会退回 `low` 模式。
+- **虚拟键盘**：支持自动、射线、手部和手指模式。Windows 原生桥接提供输入法组合文本与候选词；具体可用性取决于系统输入法与当前输入焦点。
+
+VR 输入跟随 Vivecraft / SteamVR 的控制器绑定；不同手柄的物理按键可能不同。
+
 ## 构建
 
 ### 前置要求
 
-- Rust 1.70+（用于 rust_engine）
-- JDK 21+（用于 Minecraft mod）
-- Gradle 8.x
+- Rust stable（用于 rust_engine）
+- JDK 21（设置 `JAVA_HOME`，用于 Gradle 和 Minecraft mod）
+- 项目自带的 Gradle Wrapper（8.11.1）
 - C++ 编译工具链（Windows：Visual Studio 的“使用 C++ 的桌面开发”，包含 MSVC 和 Windows SDK）
 
 ### 准备 Bullet3 源码依赖
@@ -309,8 +351,32 @@ cargo build --release
 
 ### 构建 Minecraft Mod
 
+在项目根目录运行：
+
 ```bash
-./gradlew build
+./gradlew :fabric:build :neoforge:build
+```
+
+Windows PowerShell 使用：
+
+```powershell
+.\gradlew.bat :fabric:build :neoforge:build
+```
+
+构建会编译 Rust release 引擎，并自动将当前系统的原生库复制进 JAR。Windows x64 构建需要 x64 Rust/MSVC 工具链；在 Windows 上直接构建得到的引擎不支持其他操作系统。
+
+可安装的重映射产物为：
+
+- `fabric/build/libs/mmdskin-fabric-1.0.5-1.21.4-1.jar`
+- `neoforge/build/libs/mmdskin-neoforge-1.0.5-1.21.4-1.jar`
+
+`-dev`、`-dev-shadow` 和 `-sources` JAR 用于开发，不作为安装包。Release 为两个安装包添加 `-windows-x64` 文件名后缀，内嵌模组版本保持不变。
+
+运行已有回归测试：
+
+```bash
+./gradlew :common:test
+cargo test --manifest-path rust_engine/Cargo.toml --lib
 ```
 
 ## 许可证
@@ -326,9 +392,10 @@ cargo build --release
 
 | 库 | 许可证 | 说明 |
 |----|--------|------|
-| [Rapier](https://rapier.rs) | Apache-2.0 | 3D 物理引擎 |
+| [Bullet3](https://github.com/bulletphysics/bullet3) | Zlib | MMD 刚体与关节物理 |
 | [glam](https://github.com/bitshifter/glam-rs) | MIT/Apache-2.0 | 3D 数学库 |
 | [mmd-rs](https://github.com/aankor/mmd-rs) | BSD-2-Clause | MMD 格式解析器 |
+| [LWJGL](https://www.lwjgl.org/) / [NanoVG](https://github.com/memononen/nanovg) | BSD-3-Clause / Zlib | 空间菜单绘制与原生绑定 |
 
 ### 设计参考
 
@@ -346,4 +413,4 @@ cargo build --release
 
 - [MikuMikuDance](https://sites.google.com/view/vpvp/) - 樋口優开发的原版 MMD 软件
 - [Saba](https://github.com/benikabocha/saba) - C++ MMD 库
-- [Rapier](https://rapier.rs) - Rust 物理引擎
+- [Bullet3](https://github.com/bulletphysics/bullet3) - 物理引擎
