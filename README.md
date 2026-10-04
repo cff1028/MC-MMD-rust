@@ -8,7 +8,7 @@
 
 - Minecraft：**1.21.4**；分支：[`1.21.4`](https://github.com/cff1028/MC-MMD-rust/tree/1.21.4)。
 - 当前模组版本：**1.0.5-1.21.4-1**。
-- [下载本次 Windows x64 Release](https://github.com/cff1028/MC-MMD-rust/releases/tag/1.0.5-1.21.4-1-windows-x64)：按加载器选择 Fabric 或 NeoForge JAR，只安装其中一个。
+- [下载 Windows x64 Release](https://github.com/cff1028/MC-MMD-rust/releases/tag/1.0.5-1.21.4-1-windows-x64)：按加载器选择 Fabric 或 NeoForge JAR，只安装其中一个。
 - 本次附件仅包含 **Windows x64 的 Rust 原生引擎**，需要 64 位 Java 21。其他操作系统或 CPU 架构需要另行构建对应原生库。
 
 ## 功能特性
